@@ -21,6 +21,7 @@ Open `DeferTSConfig.xml` and update:
 
 Optionally customize:
 - MaxDeferrals (default: 3)
+- MainWindowTimeoutMinutes (default: 60)
 - Messages
 - Colors
 - Registry path
@@ -77,6 +78,8 @@ Copy-Item .\* -Destination "C:\SCCMSources\DeferralTool\" -Force
 - **No window controls:** No X, minimize, or maximize buttons
 - **Alt+F4 blocked:** Cannot force-close the window
 - **Must click a button:** Only way to proceed is Defer or Install
+- **Timeout warning:** Red text displays deadline and live countdown
+- **Auto-install on timeout:** If no choice made within configured time, installation begins automatically
 - **Limit reached:** Skips main dialog, shows countdown only (no buttons)
 
 **Example:**
@@ -142,6 +145,27 @@ powershell.exe -ExecutionPolicy Bypass -File ".\deferTS.ps1"
 # Main dialog should be SKIPPED
 # Only countdown screen shows (no buttons)
 # Auto-starts Task Sequence after countdown
+```
+
+### Test Main Window Timeout
+```powershell
+# Edit DeferTSConfig.xml - set MainWindowTimeoutMinutes to 1 (for testing)
+# Reset count
+Remove-Item -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Recurse -Force -ErrorAction SilentlyContinue
+
+# Run script
+powershell.exe -ExecutionPolicy Bypass -File ".\deferTS.ps1"
+
+# Verify timeout warning displays in red:
+# - "Installation will begin"
+# - Deadline date/time (yyyy-MM-dd HH:mm format, no seconds)
+# - "if no user input is given"
+# - Live countdown: "Time remaining: X minutes, Y seconds"
+
+# Wait for countdown to reach 0
+# Installation should begin automatically
+
+# Don't forget to reset MainWindowTimeoutMinutes back to 60 (or desired value) after testing
 ```
 
 ### Test Detection

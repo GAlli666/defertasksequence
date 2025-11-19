@@ -27,6 +27,10 @@
         <!-- Deferral Settings -->
         <MaxDeferrals>3</MaxDeferrals>
 
+        <!-- Main Window Timeout (in minutes) -->
+        <!-- If user doesn't make a choice within this time, installation begins automatically -->
+        <MainWindowTimeoutMinutes>60</MainWindowTimeoutMinutes>
+
         <!-- Registry Configuration -->
         <!-- Base registry path - a subfolder with the Package ID will be created automatically -->
         <!-- Final path will be: HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123 -->
@@ -69,6 +73,10 @@ The installation will begin automatically in:</FinalMessage>
 
             <!-- How long to show the final message before auto-starting (in seconds) -->
             <FinalMessageDuration>30</FinalMessageDuration>
+
+            <!-- Timeout Warning Text (shown on main screen) -->
+            <TimeoutWarningText>Installation will begin</TimeoutWarningText>
+            <TimeoutNoInputText>if no user input is given</TimeoutNoInputText>
 
             <!-- Color Configuration (RGB values: 0-255) -->
             <!-- Accent Color (darker navy blue) - used for banner and highlights -->
