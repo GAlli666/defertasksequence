@@ -62,8 +62,9 @@ function Load-Configuration {
             throw "Configuration file not found: $Path"
         }
 
-        # Read XML file as single string using -Raw (PS 5.1)
-        [xml]$configXml = Get-Content -Path $Path -Raw -ErrorAction Stop
+        # Create XmlDocument object and load the file properly
+        $configXml = New-Object System.Xml.XmlDocument
+        $configXml.Load($Path)
 
         # Use Write-Host instead of Write-Log to avoid circular dependency
         # (Write-Log tries to access $script:Config which isn't set yet)
