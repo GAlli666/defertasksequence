@@ -437,6 +437,7 @@ function Show-DeferralUI {
     $deferButton = $window.FindName("DeferButton")
     $installButton = $window.FindName("InstallButton")
     $countdownText = $window.FindName("CountdownText")
+    $timeoutWarning = $window.FindName("TimeoutWarning")
     $timeoutWarningText = $window.FindName("TimeoutWarningText")
     $timeoutDateText = $window.FindName("TimeoutDateText")
     $timeoutNoInputText = $window.FindName("TimeoutNoInputText")
@@ -567,30 +568,43 @@ function Show-DeferralUI {
 
     # If deferral limit reached, skip main dialog and show countdown immediately
     if ($deferralsRemaining -le 0) {
-        # Hide main content and buttons immediately
+        # Hide main content, buttons, and timeout warning immediately
         $mainPanel.Visibility = [System.Windows.Visibility]::Collapsed
         $buttonPanel.Visibility = [System.Windows.Visibility]::Collapsed
         $finalPanel.Visibility = [System.Windows.Visibility]::Visible
 
+        # Hide timeout warning panel (only relevant when deferrals available)
+        if ($null -ne $timeoutWarning) {
+            $timeoutWarning.Visibility = [System.Windows.Visibility]::Collapsed
+        }
+
         $window.Add_Loaded({
+            # Verify countdown control exists
+            if ($null -eq $countdownText) {
+                Write-Log "CountdownText control not found - cannot display countdown" -Level Error
+                $script:UserChoice = 'Install'
+                $window.Close()
+                return
+            }
+
             # Start countdown
-            $seconds = [int]$Config.Configuration.Settings.UI.FinalMessageDuration
-            $timer = New-Object System.Windows.Threading.DispatcherTimer
-            $timer.Interval = [TimeSpan]::FromSeconds(1)
+            $script:secondsRemaining = [int]$Config.Configuration.Settings.UI.FinalMessageDuration
+            $countdownTimer = New-Object System.Windows.Threading.DispatcherTimer
+            $countdownTimer.Interval = [TimeSpan]::FromSeconds(1)
 
-            $timer.Add_Tick({
-                $script:seconds--
-                $countdownText.Text = $script:seconds
+            $countdownTimer.Add_Tick({
+                $script:secondsRemaining--
+                $countdownText.Text = $script:secondsRemaining
 
-                if ($script:seconds -le 0) {
-                    $timer.Stop()
+                if ($script:secondsRemaining -le 0) {
+                    $countdownTimer.Stop()
                     $script:UserChoice = 'Install'
                     $window.Close()
                 }
             })
 
-            $countdownText.Text = $seconds
-            $timer.Start()
+            $countdownText.Text = $script:secondsRemaining
+            $countdownTimer.Start()
         })
     }
 
