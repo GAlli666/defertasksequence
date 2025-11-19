@@ -63,11 +63,27 @@ function Load-Configuration {
         }
 
         [xml]$configXml = Get-Content -Path $Path -ErrorAction Stop
-        Write-Log "Configuration loaded successfully from: $Path"
+
+        # Verify the XML was loaded and has the expected structure
+        if (-not $configXml) {
+            throw "Configuration XML is empty or invalid"
+        }
+
+        if (-not $configXml.Configuration) {
+            throw "Configuration XML missing root 'Configuration' element"
+        }
+
+        if (-not $configXml.Configuration.Settings) {
+            throw "Configuration XML missing 'Settings' element"
+        }
+
+        # Log success (note: Write-Log won't have access to config yet, that's OK)
+        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Info] Configuration loaded successfully from: $Path" -ForegroundColor Gray
+
         return $configXml
     }
     catch {
-        Write-Log "Failed to load configuration: $_" -Level Error
+        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Error] Failed to load configuration: $_" -ForegroundColor Red
         throw
     }
 }
@@ -518,22 +534,36 @@ function Show-DeferralUI {
 #region Main Script
 
 try {
-    # Resolve config file path if not provided
+    # Resolve script directory for config file and banner image
     # Using Split-Path instead of $PSScriptRoot for compatibility with SCCM and other contexts
+    $scriptPath = $MyInvocation.MyCommand.Path
+    if ([string]::IsNullOrEmpty($scriptPath)) {
+        # Fallback to current directory if script path cannot be determined
+        $scriptDirectory = Get-Location | Select-Object -ExpandProperty Path
+    }
+    else {
+        $scriptDirectory = Split-Path -Parent $scriptPath
+    }
+
+    # Resolve config file path if not provided
     if ([string]::IsNullOrEmpty($ConfigFile)) {
-        $scriptPath = $MyInvocation.MyCommand.Path
-        if ([string]::IsNullOrEmpty($scriptPath)) {
-            # Fallback to current directory if script path cannot be determined
-            $scriptDirectory = Get-Location | Select-Object -ExpandProperty Path
-        }
-        else {
-            $scriptDirectory = Split-Path -Parent $scriptPath
-        }
         $ConfigFile = Join-Path $scriptDirectory "DeferTSConfig.xml"
     }
+    elseif (-not [System.IO.Path]::IsPathRooted($ConfigFile)) {
+        # If relative path provided, make it absolute relative to script directory
+        $ConfigFile = Join-Path $scriptDirectory $ConfigFile
+    }
+
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Debug] Script Directory: $scriptDirectory" -ForegroundColor Cyan
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Debug] Config File Path: $ConfigFile" -ForegroundColor Cyan
 
     # Load configuration
     $script:Config = Load-Configuration -Path $ConfigFile
+
+    # Debug: Verify config was loaded
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Debug] Config object type: $($script:Config.GetType().FullName)" -ForegroundColor Cyan
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Debug] Config root element: $($script:Config.Configuration -ne $null)" -ForegroundColor Cyan
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Debug] Config Settings element: $($script:Config.Configuration.Settings -ne $null)" -ForegroundColor Cyan
 
     Write-Log "=== Task Sequence Deferral Tool Started ==="
 
