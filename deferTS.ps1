@@ -45,9 +45,9 @@ function Write-Log {
     }
 
     # Write to log file if path specified in config
-    if ($script:Config.Settings.LogPath) {
+    if ($script:Config.Configuration.Settings.LogPath) {
         try {
-            Add-Content -Path $script:Config.Settings.LogPath -Value $logMessage -ErrorAction SilentlyContinue
+            Add-Content -Path $script:Config.Configuration.Settings.LogPath -Value $logMessage -ErrorAction SilentlyContinue
         } catch {
             # Silently continue if logging fails
         }
@@ -62,8 +62,9 @@ function Load-Configuration {
             throw "Configuration file not found: $Path"
         }
 
-        # Read XML file as single string using -Raw (PS 5.1)
-        [xml]$configXml = Get-Content -Path $Path -Raw -ErrorAction Stop
+        # Create XmlDocument object and load the file properly
+        $configXml = New-Object System.Xml.XmlDocument
+        $configXml.Load($Path)
 
         # Use Write-Host instead of Write-Log to avoid circular dependency
         # (Write-Log tries to access $script:Config which isn't set yet)
@@ -230,9 +231,9 @@ function Show-DeferralUI {
         return [System.Windows.Media.Color]::FromRgb([byte]$parts[0].Trim(), [byte]$parts[1].Trim(), [byte]$parts[2].Trim())
     }
 
-    $accentColor = ConvertTo-Color $Config.Settings.UI.AccentColor
-    $fontColor = ConvertTo-Color $Config.Settings.UI.FontColor
-    $backgroundColor = ConvertTo-Color $Config.Settings.UI.BackgroundColor
+    $accentColor = ConvertTo-Color $Config.Configuration.Settings.UI.AccentColor
+    $fontColor = ConvertTo-Color $Config.Configuration.Settings.UI.FontColor
+    $backgroundColor = ConvertTo-Color $Config.Configuration.Settings.UI.BackgroundColor
 
     $accentBrush = New-Object System.Windows.Media.SolidColorBrush($accentColor)
     $fontBrush = New-Object System.Windows.Media.SolidColorBrush($fontColor)
@@ -243,7 +244,7 @@ function Show-DeferralUI {
 <Window
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="$($Config.Settings.UI.WindowTitle)"
+    Title="$($Config.Configuration.Settings.UI.WindowTitle)"
     Height="700" Width="900"
     WindowStartupLocation="CenterScreen"
     ResizeMode="NoResize"
@@ -298,7 +299,7 @@ function Show-DeferralUI {
                 <Grid>
                     <Image Name="BannerImage" Stretch="UniformToFill" VerticalAlignment="Center" HorizontalAlignment="Center"/>
                     <TextBlock Name="BannerText"
-                               Text="$($Config.Settings.UI.BannerText)"
+                               Text="$($Config.Configuration.Settings.UI.BannerText)"
                                FontSize="32"
                                FontWeight="Bold"
                                Foreground="White"
@@ -320,7 +321,7 @@ function Show-DeferralUI {
                 <!-- Main Message -->
                 <StackPanel Grid.Row="0" Name="MainPanel">
                     <TextBlock Name="MainMessage"
-                               Text="$($Config.Settings.UI.MainMessage)"
+                               Text="$($Config.Configuration.Settings.UI.MainMessage)"
                                FontSize="18"
                                Foreground="{DynamicResource FontBrush}"
                                TextWrapping="Wrap"
@@ -337,7 +338,7 @@ function Show-DeferralUI {
                 <!-- Secondary Panel (Hidden by default) -->
                 <StackPanel Grid.Row="1" Name="SecondaryPanel" Visibility="Collapsed">
                     <TextBlock Name="SecondaryMessage"
-                               Text="$($Config.Settings.UI.SecondaryMessage)"
+                               Text="$($Config.Configuration.Settings.UI.SecondaryMessage)"
                                FontSize="18"
                                Foreground="{DynamicResource FontBrush}"
                                TextWrapping="Wrap"
@@ -350,7 +351,7 @@ function Show-DeferralUI {
                 <!-- Final Panel (Hidden by default) -->
                 <StackPanel Grid.Row="1" Name="FinalPanel" Visibility="Collapsed" VerticalAlignment="Center">
                     <TextBlock Name="FinalMessage"
-                               Text="$($Config.Settings.UI.FinalMessage)"
+                               Text="$($Config.Configuration.Settings.UI.FinalMessage)"
                                FontSize="20"
                                FontWeight="SemiBold"
                                Foreground="{DynamicResource FontBrush}"
@@ -407,7 +408,7 @@ function Show-DeferralUI {
     $countdownText = $window.FindName("CountdownText")
 
     # Load banner image if exists
-    $bannerPath = Join-Path $ScriptDirectory $Config.Settings.UI.BannerImagePath
+    $bannerPath = Join-Path $ScriptDirectory $Config.Configuration.Settings.UI.BannerImagePath
     if (Test-Path $bannerPath) {
         try {
             $bannerImage.Source = New-Object System.Windows.Media.Imaging.BitmapImage(New-Object Uri($bannerPath))
@@ -492,7 +493,7 @@ function Show-DeferralUI {
 
         $window.Add_Loaded({
             # Start countdown
-            $seconds = [int]$Config.Settings.UI.FinalMessageDuration
+            $seconds = [int]$Config.Configuration.Settings.UI.FinalMessageDuration
             $timer = New-Object System.Windows.Threading.DispatcherTimer
             $timer.Interval = [TimeSpan]::FromSeconds(1)
 
@@ -549,10 +550,10 @@ try {
     Write-Log "=== Task Sequence Deferral Tool Started ==="
 
     # Get configuration values
-    $maxDeferrals = [int]$Config.Settings.MaxDeferrals
-    $registryBasePath = $Config.Settings.RegistryPath
-    $registryValue = $Config.Settings.RegistryValueName
-    $packageID = $Config.Settings.TaskSequence.PackageID
+    $maxDeferrals = [int]$Config.Configuration.Settings.MaxDeferrals
+    $registryBasePath = $Config.Configuration.Settings.RegistryPath
+    $registryValue = $Config.Configuration.Settings.RegistryValueName
+    $packageID = $Config.Configuration.Settings.TaskSequence.PackageID
 
     # Build registry path with Package ID as subfolder
     # This allows reuse of the solution for multiple Task Sequences
@@ -560,9 +561,9 @@ try {
 
     # Create metadata hashtable from config
     $metadata = @{
-        Vendor  = $Config.Settings.Application.Vendor
-        Product = $Config.Settings.Application.Product
-        Version = $Config.Settings.Application.Version
+        Vendor  = $Config.Configuration.Settings.Application.Vendor
+        Product = $Config.Configuration.Settings.Application.Product
+        Version = $Config.Configuration.Settings.Application.Version
     }
 
     Write-Log "Max Deferrals: $maxDeferrals"
