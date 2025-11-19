@@ -351,7 +351,8 @@ function Show-DeferralUI {
                                    TextAlignment="Center"
                                    Margin="0,5,0,0"/>
                         <TextBlock Name="TimeoutNoInputText"
-                                   FontSize="16"
+                                   FontSize="22"
+                                   FontWeight="Bold"
                                    Foreground="Red"
                                    HorizontalAlignment="Center"
                                    TextAlignment="Center"
@@ -580,7 +581,8 @@ function Show-DeferralUI {
 
         $window.Add_Loaded({
             # Verify countdown control exists
-            if ($null -eq $countdownText) {
+            $localCountdownText = $window.FindName("CountdownText")
+            if ($null -eq $localCountdownText) {
                 Write-Log "CountdownText control not found - cannot display countdown" -Level Error
                 $script:UserChoice = 'Install'
                 $window.Close()
@@ -589,22 +591,27 @@ function Show-DeferralUI {
 
             # Start countdown
             $script:secondsRemaining = [int]$Config.Configuration.Settings.UI.FinalMessageDuration
-            $countdownTimer = New-Object System.Windows.Threading.DispatcherTimer
-            $countdownTimer.Interval = [TimeSpan]::FromSeconds(1)
+            $script:countdownTimer = New-Object System.Windows.Threading.DispatcherTimer
+            $script:countdownTimer.Interval = [TimeSpan]::FromSeconds(1)
 
-            $countdownTimer.Add_Tick({
+            $script:countdownTimer.Add_Tick({
                 $script:secondsRemaining--
-                $countdownText.Text = $script:secondsRemaining
+
+                # Re-get control reference to ensure it's valid
+                $countdownControl = $window.FindName("CountdownText")
+                if ($null -ne $countdownControl) {
+                    $countdownControl.Text = $script:secondsRemaining
+                }
 
                 if ($script:secondsRemaining -le 0) {
-                    $countdownTimer.Stop()
+                    $script:countdownTimer.Stop()
                     $script:UserChoice = 'Install'
                     $window.Close()
                 }
             })
 
-            $countdownText.Text = $script:secondsRemaining
-            $countdownTimer.Start()
+            $localCountdownText.Text = $script:secondsRemaining
+            $script:countdownTimer.Start()
         })
     }
 
@@ -645,7 +652,9 @@ try {
     Write-Log "=== Task Sequence Deferral Tool Started ==="
 
     # Get configuration values
-    $maxDeferrals = [int]$Config.Configuration.Settings.MaxDeferrals
+    # Add 1 to MaxDeferrals so config value matches what users actually see
+    # If config says 3, users will see "You can defer this installation 3 more times" on first run
+    $maxDeferrals = ([int]$Config.Configuration.Settings.MaxDeferrals) + 1
     $registryBasePath = $Config.Configuration.Settings.RegistryPath
     $registryValue = $Config.Configuration.Settings.RegistryValueName
     $packageID = $Config.Configuration.Settings.TaskSequence.PackageID
