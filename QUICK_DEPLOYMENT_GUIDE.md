@@ -137,7 +137,8 @@ Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123
 ### Test Deferral Limit Reached
 ```powershell
 # Set count to max (replace ABC00123 with your Package ID)
-Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Name "DeferralCount" -Value 3
+# If MaxDeferrals=3 in config, set to 4 (script adds 1 internally)
+Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Name "DeferralCount" -Value 4
 
 # Run script
 powershell.exe -ExecutionPolicy Bypass -File ".\deferTS.ps1"

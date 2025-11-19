@@ -45,6 +45,7 @@ A modern, user-friendly PowerShell tool for providing deferral options when depl
    <PackageID>ABC00123</PackageID>
 
    <!-- Customize deferral limit (default: 3) -->
+   <!-- This is the number of times users can defer - if set to 3, users see "defer 3 more times" on first run -->
    <MaxDeferrals>3</MaxDeferrals>
 
    <!-- Customize main window timeout in minutes (default: 60) -->
@@ -269,13 +270,15 @@ HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123\
   - Office 365 Install (XYZ00456) → `...\XYZ00456\`
   - Security Patches (DEF00789) → `...\DEF00789\`
 
-**Example Scenario:**
+**Example Scenario (with MaxDeferrals=3 in config):**
 1. Script starts with count = 0
 2. Count immediately increments to 1 (before UI shows)
 3. Metadata set: Vendor, Product, Version, FirstRunDate
-4. User sees "You can defer this installation 2 more times" (3 max - 1 used)
+4. User sees "You can defer this installation 3 more times" (config value: 3)
 5. User clicks "Defer" - count stays at 1, exits with code 1
-6. Next run: count = 1, increments to 2, shows "1 more time"
+6. Next run: count = 1, increments to 2, shows "2 more times"
+7. Next run: count = 2, increments to 3, shows "1 more time"
+8. Next run: count = 3, increments to 4, limit reached - no defer option
 
 ## Customization Guide
 
@@ -316,6 +319,7 @@ Customize all text in `DeferTSConfig.xml`:
 
 ```xml
 <!-- Number of times user can defer -->
+<!-- This is what users will see - if set to 3, users see "defer 3 more times" on first run -->
 <MaxDeferrals>3</MaxDeferrals>
 
 <!-- Main window timeout in minutes (default: 60) -->
@@ -417,13 +421,13 @@ Customize all text in `DeferTSConfig.xml`:
    ```
    - DeferralCount should be 1
    - Vendor, Product, Version, FirstRunDate should all be set
-4. Verify UI shows "You can defer this installation 2 more times" (assuming max = 3)
+4. Verify UI shows "You can defer this installation 3 more times" (if MaxDeferrals = 3 in config)
 5. Verify window has NO X, minimize, or maximize buttons
 6. Try Alt+F4 - should NOT close the window
 7. Click "Defer" - script exits with code 1
 8. **Check registry again** - DeferralCount should still be 1 (not incremented again)
 9. Run script again - DeferralCount should increment to 2
-10. Verify UI shows "You can defer this installation 1 more time"
+10. Verify UI shows "You can defer this installation 2 more times"
 
 ### Test Scenario 2: Window Controls Blocked
 
@@ -460,7 +464,8 @@ Customize all text in `DeferTSConfig.xml`:
 
 1. Manually set registry value to max deferrals (replace ABC00123 with your Package ID):
    ```powershell
-   Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Name "DeferralCount" -Value 3
+   # If MaxDeferrals=3 in config, set to 4 (script adds 1 internally)
+   Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Name "DeferralCount" -Value 4
    ```
 2. Run script
 3. Registry should NOT increment further (already at limit)
