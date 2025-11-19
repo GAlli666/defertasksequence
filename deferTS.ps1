@@ -63,11 +63,15 @@ function Load-Configuration {
         }
 
         [xml]$configXml = Get-Content -Path $Path -ErrorAction Stop
-        Write-Log "Configuration loaded successfully from: $Path"
+
+        # Use Write-Host instead of Write-Log to avoid circular dependency
+        # (Write-Log tries to access $script:Config which isn't set yet)
+        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Info] Configuration loaded successfully from: $Path" -ForegroundColor Gray
+
         return $configXml
     }
     catch {
-        Write-Log "Failed to load configuration: $_" -Level Error
+        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Error] Failed to load configuration: $_" -ForegroundColor Red
         throw
     }
 }
@@ -518,18 +522,24 @@ function Show-DeferralUI {
 #region Main Script
 
 try {
-    # Resolve config file path if not provided
+    # Resolve script directory for config file and banner image
     # Using Split-Path instead of $PSScriptRoot for compatibility with SCCM and other contexts
+    $scriptPath = $MyInvocation.MyCommand.Path
+    if ([string]::IsNullOrEmpty($scriptPath)) {
+        # Fallback to current directory if script path cannot be determined
+        $scriptDirectory = Get-Location | Select-Object -ExpandProperty Path
+    }
+    else {
+        $scriptDirectory = Split-Path -Parent $scriptPath
+    }
+
+    # Resolve config file path if not provided
     if ([string]::IsNullOrEmpty($ConfigFile)) {
-        $scriptPath = $MyInvocation.MyCommand.Path
-        if ([string]::IsNullOrEmpty($scriptPath)) {
-            # Fallback to current directory if script path cannot be determined
-            $scriptDirectory = Get-Location | Select-Object -ExpandProperty Path
-        }
-        else {
-            $scriptDirectory = Split-Path -Parent $scriptPath
-        }
         $ConfigFile = Join-Path $scriptDirectory "DeferTSConfig.xml"
+    }
+    elseif (-not [System.IO.Path]::IsPathRooted($ConfigFile)) {
+        # If relative path provided, make it absolute relative to script directory
+        $ConfigFile = Join-Path $scriptDirectory $ConfigFile
     }
 
     # Load configuration
