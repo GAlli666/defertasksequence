@@ -333,6 +333,37 @@ function Show-DeferralUI {
                                Foreground="{DynamicResource FontBrush}"
                                Opacity="0.7"
                                Margin="0,0,0,30"/>
+
+                    <!-- Timeout Warning -->
+                    <StackPanel Name="TimeoutWarning" HorizontalAlignment="Center" Margin="0,20,0,0">
+                        <TextBlock Name="TimeoutWarningText"
+                                   FontSize="22"
+                                   FontWeight="Bold"
+                                   Foreground="Red"
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock Name="TimeoutDateText"
+                                   FontSize="18"
+                                   FontWeight="SemiBold"
+                                   Foreground="Red"
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center"
+                                   Margin="0,5,0,0"/>
+                        <TextBlock Name="TimeoutNoInputText"
+                                   FontSize="16"
+                                   Foreground="Red"
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center"
+                                   Margin="0,5,0,0"/>
+                        <TextBlock Name="TimeoutCountdown"
+                                   FontSize="20"
+                                   FontWeight="Bold"
+                                   Foreground="Red"
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center"
+                                   Margin="0,10,0,0"/>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- Secondary Panel (Hidden by default) -->
@@ -406,6 +437,10 @@ function Show-DeferralUI {
     $deferButton = $window.FindName("DeferButton")
     $installButton = $window.FindName("InstallButton")
     $countdownText = $window.FindName("CountdownText")
+    $timeoutWarningText = $window.FindName("TimeoutWarningText")
+    $timeoutDateText = $window.FindName("TimeoutDateText")
+    $timeoutNoInputText = $window.FindName("TimeoutNoInputText")
+    $timeoutCountdown = $window.FindName("TimeoutCountdown")
 
     # Load banner image if exists
     $bannerPath = Join-Path $ScriptDirectory $Config.Configuration.Settings.UI.BannerImagePath
@@ -483,6 +518,52 @@ function Show-DeferralUI {
             Write-Log "User attempted to close window via system method - prevented" -Level Warning
         }
     })
+
+    # Set up main window timeout (if deferrals still available)
+    if ($deferralsRemaining -gt 0) {
+        # Get timeout in minutes from config
+        $timeoutMinutes = [int]$Config.Configuration.Settings.MainWindowTimeoutMinutes
+
+        # Set timeout warning text
+        $timeoutWarningText.Text = $Config.Configuration.Settings.UI.TimeoutWarningText
+        $timeoutNoInputText.Text = $Config.Configuration.Settings.UI.TimeoutNoInputText
+
+        # Calculate deadline date/time (without seconds)
+        $deadlineTime = (Get-Date).AddMinutes($timeoutMinutes)
+        $timeoutDateText.Text = $deadlineTime.ToString("yyyy-MM-dd HH:mm")
+
+        # Start timeout timer
+        $script:timeoutSecondsRemaining = $timeoutMinutes * 60
+        $mainTimeoutTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $mainTimeoutTimer.Interval = [TimeSpan]::FromSeconds(1)
+
+        $mainTimeoutTimer.Add_Tick({
+            $script:timeoutSecondsRemaining--
+
+            # Update countdown display
+            $minutes = [Math]::Floor($script:timeoutSecondsRemaining / 60)
+            $seconds = $script:timeoutSecondsRemaining % 60
+            $timeoutCountdown.Text = "Time remaining: $minutes minutes, $seconds seconds"
+
+            if ($script:timeoutSecondsRemaining -le 0) {
+                $mainTimeoutTimer.Stop()
+                Write-Log "Main window timeout reached - auto-starting installation" -Level Warning
+                $script:UserChoice = 'Install'
+                $window.Close()
+            }
+        })
+
+        # Initial display
+        $minutes = [Math]::Floor($script:timeoutSecondsRemaining / 60)
+        $seconds = $script:timeoutSecondsRemaining % 60
+        $timeoutCountdown.Text = "Time remaining: $minutes minutes, $seconds seconds"
+
+        # Start timer when window loads
+        $window.Add_Loaded({
+            $mainTimeoutTimer.Start()
+            Write-Log "Main window timeout started: $timeoutMinutes minutes"
+        })
+    }
 
     # If deferral limit reached, skip main dialog and show countdown immediately
     if ($deferralsRemaining -le 0) {
