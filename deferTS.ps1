@@ -22,7 +22,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$false)]
-    [string]$ConfigFile = "$PSScriptRoot\DeferTSConfig.xml"
+    [string]$ConfigFile = ""
 )
 
 #region Functions
@@ -208,7 +208,8 @@ function Show-DeferralUI {
     param(
         [object]$Config,
         [int]$CurrentDeferrals,
-        [int]$MaxDeferrals
+        [int]$MaxDeferrals,
+        [string]$ScriptDirectory
     )
 
     Add-Type -AssemblyName PresentationFramework
@@ -401,7 +402,7 @@ function Show-DeferralUI {
     $countdownText = $window.FindName("CountdownText")
 
     # Load banner image if exists
-    $bannerPath = Join-Path $PSScriptRoot $Config.Settings.UI.BannerImagePath
+    $bannerPath = Join-Path $ScriptDirectory $Config.Settings.UI.BannerImagePath
     if (Test-Path $bannerPath) {
         try {
             $bannerImage.Source = New-Object System.Windows.Media.Imaging.BitmapImage(New-Object Uri($bannerPath))
@@ -517,6 +518,20 @@ function Show-DeferralUI {
 #region Main Script
 
 try {
+    # Resolve config file path if not provided
+    # Using Split-Path instead of $PSScriptRoot for compatibility with SCCM and other contexts
+    if ([string]::IsNullOrEmpty($ConfigFile)) {
+        $scriptPath = $MyInvocation.MyCommand.Path
+        if ([string]::IsNullOrEmpty($scriptPath)) {
+            # Fallback to current directory if script path cannot be determined
+            $scriptDirectory = Get-Location | Select-Object -ExpandProperty Path
+        }
+        else {
+            $scriptDirectory = Split-Path -Parent $scriptPath
+        }
+        $ConfigFile = Join-Path $scriptDirectory "DeferTSConfig.xml"
+    }
+
     # Load configuration
     $script:Config = Load-Configuration -Path $ConfigFile
 
@@ -570,7 +585,7 @@ try {
 
     # Show UI with the already-incremented count
     Write-Log "Displaying deferral UI..."
-    $userChoice = Show-DeferralUI -Config $Config -CurrentDeferrals $currentDeferrals -MaxDeferrals $maxDeferrals
+    $userChoice = Show-DeferralUI -Config $Config -CurrentDeferrals $currentDeferrals -MaxDeferrals $maxDeferrals -ScriptDirectory $scriptDirectory
 
     Write-Log "User choice: $userChoice"
 
