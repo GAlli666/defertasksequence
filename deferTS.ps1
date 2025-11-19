@@ -63,11 +63,15 @@ function Load-Configuration {
         }
 
         [xml]$configXml = Get-Content -Path $Path -ErrorAction Stop
-        Write-Log "Configuration loaded successfully from: $Path"
+
+        # Use Write-Host instead of Write-Log to avoid circular dependency
+        # (Write-Log tries to access $script:Config which isn't set yet)
+        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Info] Configuration loaded successfully from: $Path" -ForegroundColor Gray
+
         return $configXml
     }
     catch {
-        Write-Log "Failed to load configuration: $_" -Level Error
+        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Error] Failed to load configuration: $_" -ForegroundColor Red
         throw
     }
 }
