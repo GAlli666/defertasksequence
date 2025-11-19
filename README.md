@@ -159,22 +159,29 @@ For the deferral system to work properly:
 ### User Flow
 
 1. **First Launch (Deferrals Available):**
+   - **Deferral count incremented IMMEDIATELY** (before UI shows)
    - Modern UI appears with company branding
-   - Shows main message and deferral count
+   - Shows main message and updated deferral count
    - Two buttons: "Defer" and "Install Now"
+   - **Important:** Force-closing the window counts as a deferral (count already incremented)
 
 2. **User Clicks "Defer":**
-   - Deferral count incremented in registry
    - Script exits with code 1 (triggers SCCM retry)
    - UI closes
+   - Deferral count remains incremented (no additional increment)
 
 3. **User Clicks "Install Now":**
    - Secondary confirmation appears
    - "Are you sure?" message with two buttons:
-     - "Yes, Install Now" - proceeds with installation
+     - "Yes, Install Now" - proceeds with installation, resets deferral count to 0
      - "No, Go Back" - returns to main screen
 
-4. **Deferral Limit Reached:**
+4. **User Force-Closes Window:**
+   - Deferral count already incremented at script start
+   - Script exits with code 1 (triggers SCCM retry)
+   - This prevents users from gaming the system by force-closing
+
+5. **Deferral Limit Reached:**
    - Final message appears automatically
    - Countdown timer (configurable seconds)
    - No buttons - auto-starts Task Sequence
@@ -189,12 +196,15 @@ Load Configuration (XML)
     ↓
 Read Registry (Current Deferral Count)
     ↓
-Show WPF UI
+INCREMENT DEFERRAL COUNT IMMEDIATELY (if not at limit)
+    ↓
+Show WPF UI (displays already-incremented count)
     ↓
 User Choice?
-    ├─ Defer → Increment Registry → Exit 1 (SCCM retries later)
-    ├─ Install → Confirmation → Start Task Sequence → Exit 0
-    └─ Limit Reached → Countdown → Start Task Sequence → Exit 0
+    ├─ Defer → Exit 1 (count already incremented)
+    ├─ Install → Confirmation → Start Task Sequence → Reset Count to 0 → Exit 0
+    ├─ Force Close → Exit 1 (count already incremented)
+    └─ Limit Reached → Countdown → Start Task Sequence → Reset Count to 0 → Exit 0
 ```
 
 ## Registry Details
@@ -206,10 +216,19 @@ Value: DeferralCount (DWORD)
 ```
 
 **Behavior:**
-- Incremented each time user defers
-- Reset to 0 when Task Sequence starts successfully
+- **Incremented IMMEDIATELY when script starts** (before UI shows)
+- This ensures force-closing the window counts as a deferral
+- Clicking "Defer" button does NOT increment again (already incremented)
+- Only clicking "Install" and successfully starting TS resets count to 0
 - Persists across reboots
 - Can be manually modified if needed for testing
+
+**Example Scenario:**
+1. Script starts with count = 0
+2. Count immediately increments to 1 (before UI shows)
+3. User sees "You have 2 deferral(s) remaining" (3 max - 1 used = 2 remaining)
+4. User clicks "Defer" - count stays at 1, exits with code 1
+5. Next time script runs: count = 1, increments to 2, shows "1 remaining"
 
 ## Customization Guide
 
@@ -326,30 +345,45 @@ Customize all text in `DeferTSConfig.xml`:
 
 ## Testing
 
-### Test Scenario 1: Fresh Install
+### Test Scenario 1: Fresh Install with Defer
 
-1. Deploy to test device running Windows 10
-2. Verify UI appears
-3. Click "Defer" - verify registry increments
-4. Wait for retry schedule
-5. Verify UI appears again with updated deferral count
+1. Reset registry: `Remove-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name "DeferralCount" -ErrorAction SilentlyContinue`
+2. Run script manually
+3. **Check registry BEFORE clicking anything** - should already be incremented to 1
+4. Verify UI shows "You have 2 deferral(s) remaining" (assuming max = 3)
+5. Click "Defer" - script exits with code 1
+6. **Check registry again** - should still be 1 (not incremented again)
+7. Run script again - registry should increment to 2
+8. Verify UI shows "You have 1 deferral(s) remaining"
 
-### Test Scenario 2: Install Accepted
+### Test Scenario 2: Force Close (Important!)
 
-1. Click "Install Now"
-2. Verify confirmation appears
-3. Click "Yes, Install Now"
-4. Verify Task Sequence starts
+1. Reset registry to 0
+2. Run script manually
+3. **Check registry immediately** - should already be 1
+4. Force close the window (X button or Alt+F4)
+5. **Check registry** - should still be 1 (deferral counted)
+6. This proves force-close = deferral used
 
-### Test Scenario 3: Deferral Limit Reached
+### Test Scenario 3: Install Accepted
+
+1. Run script
+2. Click "Install Now"
+3. Verify confirmation appears
+4. Click "Yes, Install Now"
+5. Verify Task Sequence starts
+6. **Check registry** - should be reset to 0
+
+### Test Scenario 4: Deferral Limit Reached
 
 1. Manually set registry value to max deferrals:
    ```powershell
    Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name "DeferralCount" -Value 3
    ```
 2. Run script
-3. Verify countdown appears
-4. Verify Task Sequence auto-starts
+3. Registry should NOT increment further (already at limit)
+4. Verify countdown appears immediately
+5. Verify Task Sequence auto-starts after countdown
 
 ### Reset for Testing
 

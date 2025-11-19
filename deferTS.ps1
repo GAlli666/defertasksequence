@@ -496,47 +496,50 @@ try {
     $currentDeferrals = Get-DeferralCount -RegistryPath $registryPath -ValueName $registryValue
     Write-Log "Current Deferral Count: $currentDeferrals"
 
-    # Show UI
+    # Determine if we've reached the deferral limit
+    $deferralsRemaining = $maxDeferrals - $currentDeferrals
+
+    # INCREMENT DEFERRAL COUNT IMMEDIATELY (before showing UI)
+    # This ensures that force-closing the window counts as a deferral
+    if ($deferralsRemaining -gt 0) {
+        $newCount = $currentDeferrals + 1
+        if (Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count $newCount) {
+            Write-Log "Deferral count incremented immediately: $newCount / $maxDeferrals"
+            Write-Log "This ensures force-close counts as a deferral"
+            # Update current count to reflect the increment
+            $currentDeferrals = $newCount
+        }
+        else {
+            Write-Log "Failed to increment deferral count. Proceeding with installation." -Level Warning
+            # If we can't track deferrals, force installation
+            $currentDeferrals = $maxDeferrals
+        }
+    }
+
+    # Show UI with the already-incremented count
     Write-Log "Displaying deferral UI..."
     $userChoice = Show-DeferralUI -Config $Config -CurrentDeferrals $currentDeferrals -MaxDeferrals $maxDeferrals
 
     Write-Log "User choice: $userChoice"
 
     # Process user choice
-    if ($userChoice -eq 'Defer' -and $currentDeferrals -lt $maxDeferrals) {
-        # Increment deferral count
-        $newCount = $currentDeferrals + 1
-
-        if (Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count $newCount) {
-            Write-Log "Installation deferred. Count: $newCount / $maxDeferrals"
-
-            # Exit with error code 1 to trigger retry by SCCM
-            Write-Log "Exiting with code 1 to trigger retry"
-            exit 1
-        }
-        else {
-            Write-Log "Failed to update deferral count. Proceeding with installation." -Level Warning
-
-            # Start TS since we couldn't save the deferral
-            if (Start-TaskSequence -PackageID $packageID) {
-                Write-Log "Task Sequence started successfully"
-                exit 0
-            }
-            else {
-                Write-Log "Failed to start Task Sequence" -Level Error
-                exit 1
-            }
-        }
+    if ($userChoice -eq 'Defer') {
+        # Deferral count was already incremented above
+        # Just exit with error code 1 to trigger retry by SCCM
+        Write-Log "User chose to defer. Count already incremented to: $currentDeferrals / $maxDeferrals"
+        Write-Log "Exiting with code 1 to trigger retry"
+        exit 1
     }
-    elseif ($userChoice -eq 'Install' -or $currentDeferrals -ge $maxDeferrals) {
-        # Start Task Sequence
-        Write-Log "Starting Task Sequence installation..."
+    elseif ($userChoice -eq 'Install') {
+        # User chose to install - start Task Sequence
+        Write-Log "User chose to install. Starting Task Sequence..."
 
         if (Start-TaskSequence -PackageID $packageID) {
             Write-Log "Task Sequence started successfully"
 
             # Reset deferral count after successful start
             Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count 0
+            Write-Log "Deferral count reset to 0"
 
             Write-Log "=== Task Sequence Deferral Tool Completed Successfully ==="
             exit 0
@@ -548,8 +551,10 @@ try {
         }
     }
     else {
-        # User closed window without choosing
-        Write-Log "User closed window without making a choice. Exiting..." -Level Warning
+        # User closed window without choosing (or null choice)
+        # Deferral count was already incremented, so this counts as a deferral
+        Write-Log "User closed window without making a choice. Count already incremented." -Level Warning
+        Write-Log "Exiting with code 1 to trigger retry"
         exit 1
     }
 }
