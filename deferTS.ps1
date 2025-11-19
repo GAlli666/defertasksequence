@@ -730,21 +730,23 @@ try {
         exit 1
     }
     elseif ($userChoice -eq 'Install') {
-        # User chose to install - start Task Sequence
-        Write-Log "User chose to install. Starting Task Sequence..."
+        # User chose to install - reset deferral count BEFORE starting TS
+        # This way if TS fails to start, user gets their deferrals back on next run
+        Write-Log "User chose to install. Resetting deferral count..."
+        Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count 0 -Metadata $metadata
+        Write-Log "Deferral count reset to 0"
+
+        # Now start Task Sequence
+        Write-Log "Starting Task Sequence..."
 
         if (Start-TaskSequence -PackageID $packageID) {
             Write-Log "Task Sequence started successfully"
-
-            # Reset deferral count after successful start
-            Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count 0 -Metadata $metadata
-            Write-Log "Deferral count reset to 0"
-
             Write-Log "=== Task Sequence Deferral Tool Completed Successfully ==="
             exit 0
         }
         else {
             Write-Log "Failed to start Task Sequence" -Level Error
+            Write-Log "Note: Deferral count was reset - user will have full deferrals on next run" -Level Warning
             Write-Log "=== Task Sequence Deferral Tool Completed with Errors ==="
             exit 1
         }
