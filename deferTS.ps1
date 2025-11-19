@@ -154,101 +154,74 @@ function Start-TaskSequence {
     Write-Log "Attempting to start Task Sequence: $PackageID"
 
     try {
-        # Method 1: Try to find and trigger Task Sequence via scheduler messages
-        # This is the most reliable method for Available Task Sequence deployments
-        Write-Log "Method 1: Looking for Task Sequence deployment via CCM_Scheduler..."
-
-        try {
-            $schedules = Get-WmiObject -Namespace "ROOT\ccm\scheduler" -Query "SELECT * FROM CCM_Scheduler_ScheduledMessage WHERE ScheduledMessageID LIKE '%$PackageID%' AND ScheduledMessageID LIKE '%-{00000000-0000-0000-0000-000000000021}%'"
-
-            if ($schedules) {
-                $schedule = $schedules | Select-Object -First 1
-                $scheduleID = $schedule.ScheduledMessageID
-                Write-Log "Found Task Sequence schedule: $scheduleID"
-
-                # Trigger the scheduled message
-                $result = Invoke-WmiMethod -Namespace "ROOT\ccm\scheduler" -Class CCM_Scheduler_ScheduledMessage -Name "TriggerSchedule" -ArgumentList $scheduleID
-
-                if ($result) {
-                    Write-Log "Task Sequence triggered successfully via scheduler (Method 1)"
-                    return $true
-                }
-            }
-            else {
-                Write-Log "No scheduler messages found for Package ID: $PackageID" -Level Warning
-            }
-        }
-        catch {
-            Write-Log "Method 1 (Scheduler) failed: $_" -Level Warning
-        }
-
-        # Method 2: Try using Software Center COM object
-        Write-Log "Method 2: Attempting to start via Software Center API..."
+        # Method 1: Try using ServiceWindow ExecuteProgram with iExecuteNow parameter
+        Write-Log "Method 1: Using UIResource ExecuteProgram with immediate execution flag..."
 
         try {
             $softwareCenter = New-Object -ComObject UIResource.UIResourceMgr
             $availablePrograms = $softwareCenter.GetAvailableApplications()
 
-            $program = $availablePrograms | Where-Object { $_.PackageID -eq $PackageID }
+            $deployment = $availablePrograms | Where-Object { $_.PackageID -eq $PackageID }
 
-            if ($program) {
-                Write-Log "Found in available programs: $($program.PackageName)"
-                $softwareCenter.ExecuteProgram($program.ProgramID, $program.PackageID, $true)
-                Write-Log "Task Sequence started via Software Center API (Method 2)"
-                return $true
-            }
-            else {
-                Write-Log "Package ID not found in GetAvailableApplications()" -Level Warning
-            }
-        }
-        catch {
-            Write-Log "Method 2 (Software Center API) failed: $_" -Level Warning
-        }
+            if ($deployment) {
+                Write-Log "Found Task Sequence: $($deployment.PackageName)"
+                Write-Log "ID: $($deployment.ID), ProgramID: $($deployment.ProgramID)"
 
-        # Method 3: Direct WMI execution via CCM_ProgramsManager
-        Write-Log "Method 3: Attempting WMI direct execution..."
+                try {
+                    # Try ExecuteProgram with iExecuteNow = 1 (immediate execution)
+                    $softwareCenter.ExecuteProgram($deployment.ProgramID, $deployment.PackageID, 1)
+                    Start-Sleep -Seconds 2
+                    Write-Log "Task Sequence execution initiated (Method 1)"
+                    return $true
+                }
+                catch {
+                    Write-Log "ExecuteProgram with immediate flag failed: $($_.Exception.Message)" -Level Warning
 
-        try {
-            $programs = Get-WmiObject -Namespace "ROOT\ccm\ClientSDK" -Class CCM_Program -Filter "PackageID='$PackageID'"
-
-            if ($programs) {
-                foreach ($program in $programs) {
-                    Write-Log "Found program: $($program.Name), ProgramID: $($program.ProgramID)"
-
-                    $result = Invoke-WmiMethod -Namespace "ROOT\ccm\ClientSDK" -Class CCM_ProgramsManager -Name ExecuteProgram `
-                        -ArgumentList @($program.ProgramID, $PackageID)
-
-                    if ($result.ReturnValue -eq 0) {
-                        Write-Log "Task Sequence started via WMI ExecuteProgram (Method 3)"
+                    # Try without the third parameter
+                    try {
+                        $softwareCenter.ExecuteProgram($deployment.ProgramID, $deployment.PackageID)
+                        Start-Sleep -Seconds 2
+                        Write-Log "Task Sequence execution initiated without flag (Method 1b)"
                         return $true
                     }
-                    else {
-                        Write-Log "ExecuteProgram returned error code: $($result.ReturnValue)" -Level Warning
+                    catch {
+                        Write-Log "ExecuteProgram without flag also failed: $($_.Exception.Message)" -Level Warning
                     }
                 }
             }
+        }
+        catch {
+            Write-Log "Method 1 failed: $_" -Level Warning
+        }
+
+        # Method 2: Open Software Center to OSD page as fallback
+        Write-Log "Method 2: Opening Software Center to Task Sequence page..."
+
+        try {
+            $scPath = Join-Path $env:SystemRoot "CCM\ClientUX\SCClient.exe"
+
+            if (Test-Path $scPath) {
+                Start-Process $scPath -ArgumentList "SoftwareCenter:Page=OSD" -ErrorAction Stop
+                Write-Log "Software Center launched - User needs to click 'Install'" -Level Warning
+                return $true
+            }
             else {
-                Write-Log "No programs found in CCM_Program for Package ID: $PackageID" -Level Warning
+                Write-Log "Software Center executable not found: $scPath" -Level Error
             }
         }
         catch {
-            Write-Log "Method 3 (WMI Execution) failed: $_" -Level Warning
+            Write-Log "Method 2 failed: $_" -Level Warning
         }
 
         # All methods failed
-        Write-Log "=== All methods failed to start Task Sequence ===" -Level Error
+        Write-Log "=== Could not start Task Sequence ===" -Level Error
         Write-Log "Package ID: $PackageID" -Level Error
-        Write-Log "Please verify:" -Level Error
-        Write-Log "1. Task Sequence is deployed as 'Available' to this device" -Level Error
-        Write-Log "2. Package ID '$PackageID' is correct in DeferTSConfig.xml" -Level Error
-        Write-Log "3. Task Sequence is visible in Software Center" -Level Error
-        Write-Log "4. SCCM Client is functioning properly (try: Get-WmiObject -Namespace ROOT\\ccm\\ClientSDK -Class CCM_Program)" -Level Error
+        Write-Log "User must manually open Software Center and click Install" -Level Error
 
         return $false
     }
     catch {
         Write-Log "Error starting Task Sequence: $_" -Level Error
-        Write-Log "Stack Trace: $($_.ScriptStackTrace)" -Level Error
         return $false
     }
 }
