@@ -62,7 +62,15 @@ function Load-Configuration {
             throw "Configuration file not found: $Path"
         }
 
-        [xml]$configXml = Get-Content -Path $Path -ErrorAction Stop
+        # Read XML file - use -Raw for PS 3.0+ or join lines for older versions
+        # This ensures the XML is read as a single string, not an array of lines
+        if ($PSVersionTable.PSVersion.Major -ge 3) {
+            [xml]$configXml = Get-Content -Path $Path -Raw -ErrorAction Stop
+        }
+        else {
+            # Fallback for PS 2.0 (though we target 3.0+)
+            [xml]$configXml = (Get-Content -Path $Path -ErrorAction Stop) -join "`n"
+        }
 
         # Use Write-Host instead of Write-Log to avoid circular dependency
         # (Write-Log tries to access $script:Config which isn't set yet)
