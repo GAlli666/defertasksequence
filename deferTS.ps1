@@ -97,7 +97,8 @@ function Set-DeferralCount {
     param(
         [string]$RegistryPath,
         [string]$ValueName,
-        [int]$Count
+        [int]$Count,
+        [hashtable]$Metadata = $null
     )
 
     try {
@@ -107,8 +108,32 @@ function Set-DeferralCount {
             Write-Log "Created registry path: $RegistryPath"
         }
 
+        # Set deferral count
         Set-ItemProperty -Path $RegistryPath -Name $ValueName -Value $Count -Type DWord -Force
         Write-Log "Set deferral count to: $Count"
+
+        # If metadata provided and FirstRunDate doesn't exist, set all metadata
+        if ($Metadata) {
+            $existingFirstRun = Get-ItemProperty -Path $RegistryPath -Name "FirstRunDate" -ErrorAction SilentlyContinue
+
+            if (-not $existingFirstRun) {
+                # First time - set all metadata
+                Set-ItemProperty -Path $RegistryPath -Name "Vendor" -Value $Metadata.Vendor -Type String -Force
+                Set-ItemProperty -Path $RegistryPath -Name "Product" -Value $Metadata.Product -Type String -Force
+                Set-ItemProperty -Path $RegistryPath -Name "Version" -Value $Metadata.Version -Type String -Force
+                Set-ItemProperty -Path $RegistryPath -Name "FirstRunDate" -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss") -Type String -Force
+                Write-Log "Set application metadata: $($Metadata.Vendor) - $($Metadata.Product) v$($Metadata.Version)"
+            }
+            else {
+                # Subsequent runs - update version if changed
+                $existingVersion = Get-ItemProperty -Path $RegistryPath -Name "Version" -ErrorAction SilentlyContinue
+                if ($existingVersion -and $existingVersion.Version -ne $Metadata.Version) {
+                    Set-ItemProperty -Path $RegistryPath -Name "Version" -Value $Metadata.Version -Type String -Force
+                    Write-Log "Updated version to: $($Metadata.Version)"
+                }
+            }
+        }
+
         return $true
     }
     catch {
@@ -390,7 +415,12 @@ function Show-DeferralUI {
     # Set deferral info
     $deferralsRemaining = $MaxDeferrals - $CurrentDeferrals
     if ($deferralsRemaining -gt 0) {
-        $deferralInfo.Text = "You have $deferralsRemaining deferral(s) remaining."
+        if ($deferralsRemaining -eq 1) {
+            $deferralInfo.Text = "You can defer this installation 1 more time."
+        }
+        else {
+            $deferralInfo.Text = "You can defer this installation $deferralsRemaining more times."
+        }
     }
     else {
         $deferralInfo.Text = "This is a required installation and cannot be deferred."
@@ -437,14 +467,24 @@ function Show-DeferralUI {
         }
     })
 
-    # If deferral limit reached, auto-start countdown
-    if ($deferralsRemaining -le 0) {
-        $window.Add_Loaded({
-            # Hide main content and buttons
-            $mainPanel.Visibility = [System.Windows.Visibility]::Collapsed
-            $buttonPanel.Visibility = [System.Windows.Visibility]::Collapsed
-            $finalPanel.Visibility = [System.Windows.Visibility]::Visible
+    # Prevent window from being closed via Alt+F4, X button, or other means (except programmatic close)
+    $window.Add_Closing({
+        param($sender, $e)
+        # Only allow closing if UserChoice has been set (programmatic close)
+        if ($null -eq $script:UserChoice) {
+            $e.Cancel = $true
+            Write-Log "User attempted to close window via system method - prevented" -Level Warning
+        }
+    })
 
+    # If deferral limit reached, skip main dialog and show countdown immediately
+    if ($deferralsRemaining -le 0) {
+        # Hide main content and buttons immediately
+        $mainPanel.Visibility = [System.Windows.Visibility]::Collapsed
+        $buttonPanel.Visibility = [System.Windows.Visibility]::Collapsed
+        $finalPanel.Visibility = [System.Windows.Visibility]::Visible
+
+        $window.Add_Loaded({
             # Start countdown
             $seconds = [int]$Config.Settings.UI.FinalMessageDuration
             $timer = New-Object System.Windows.Threading.DispatcherTimer
@@ -484,59 +524,74 @@ try {
 
     # Get configuration values
     $maxDeferrals = [int]$Config.Settings.MaxDeferrals
-    $registryPath = $Config.Settings.RegistryPath
+    $registryBasePath = $Config.Settings.RegistryPath
     $registryValue = $Config.Settings.RegistryValueName
     $packageID = $Config.Settings.TaskSequence.PackageID
+
+    # Build registry path with Package ID as subfolder
+    # This allows reuse of the solution for multiple Task Sequences
+    $registryPath = Join-Path $registryBasePath $packageID
+
+    # Create metadata hashtable from config
+    $metadata = @{
+        Vendor  = $Config.Settings.Application.Vendor
+        Product = $Config.Settings.Application.Product
+        Version = $Config.Settings.Application.Version
+    }
 
     Write-Log "Max Deferrals: $maxDeferrals"
     Write-Log "Registry Path: $registryPath"
     Write-Log "Task Sequence Package ID: $packageID"
+    Write-Log "Application: $($metadata.Vendor) - $($metadata.Product) v$($metadata.Version)"
 
     # Get current deferral count
     $currentDeferrals = Get-DeferralCount -RegistryPath $registryPath -ValueName $registryValue
     Write-Log "Current Deferral Count: $currentDeferrals"
 
-    # Show UI
+    # Determine if we've reached the deferral limit
+    $deferralsRemaining = $maxDeferrals - $currentDeferrals
+
+    # INCREMENT DEFERRAL COUNT IMMEDIATELY (before showing UI)
+    # This ensures that force-closing the window counts as a deferral
+    if ($deferralsRemaining -gt 0) {
+        $newCount = $currentDeferrals + 1
+        if (Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count $newCount -Metadata $metadata) {
+            Write-Log "Deferral count incremented immediately: $newCount / $maxDeferrals"
+            Write-Log "This ensures force-close counts as a deferral"
+            # Update current count to reflect the increment
+            $currentDeferrals = $newCount
+        }
+        else {
+            Write-Log "Failed to increment deferral count. Proceeding with installation." -Level Warning
+            # If we can't track deferrals, force installation
+            $currentDeferrals = $maxDeferrals
+        }
+    }
+
+    # Show UI with the already-incremented count
     Write-Log "Displaying deferral UI..."
     $userChoice = Show-DeferralUI -Config $Config -CurrentDeferrals $currentDeferrals -MaxDeferrals $maxDeferrals
 
     Write-Log "User choice: $userChoice"
 
     # Process user choice
-    if ($userChoice -eq 'Defer' -and $currentDeferrals -lt $maxDeferrals) {
-        # Increment deferral count
-        $newCount = $currentDeferrals + 1
-
-        if (Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count $newCount) {
-            Write-Log "Installation deferred. Count: $newCount / $maxDeferrals"
-
-            # Exit with error code 1 to trigger retry by SCCM
-            Write-Log "Exiting with code 1 to trigger retry"
-            exit 1
-        }
-        else {
-            Write-Log "Failed to update deferral count. Proceeding with installation." -Level Warning
-
-            # Start TS since we couldn't save the deferral
-            if (Start-TaskSequence -PackageID $packageID) {
-                Write-Log "Task Sequence started successfully"
-                exit 0
-            }
-            else {
-                Write-Log "Failed to start Task Sequence" -Level Error
-                exit 1
-            }
-        }
+    if ($userChoice -eq 'Defer') {
+        # Deferral count was already incremented above
+        # Just exit with error code 1 to trigger retry by SCCM
+        Write-Log "User chose to defer. Count already incremented to: $currentDeferrals / $maxDeferrals"
+        Write-Log "Exiting with code 1 to trigger retry"
+        exit 1
     }
-    elseif ($userChoice -eq 'Install' -or $currentDeferrals -ge $maxDeferrals) {
-        # Start Task Sequence
-        Write-Log "Starting Task Sequence installation..."
+    elseif ($userChoice -eq 'Install') {
+        # User chose to install - start Task Sequence
+        Write-Log "User chose to install. Starting Task Sequence..."
 
         if (Start-TaskSequence -PackageID $packageID) {
             Write-Log "Task Sequence started successfully"
 
             # Reset deferral count after successful start
-            Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count 0
+            Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count 0 -Metadata $metadata
+            Write-Log "Deferral count reset to 0"
 
             Write-Log "=== Task Sequence Deferral Tool Completed Successfully ==="
             exit 0
@@ -548,8 +603,10 @@ try {
         }
     }
     else {
-        # User closed window without choosing
-        Write-Log "User closed window without making a choice. Exiting..." -Level Warning
+        # User closed window without choosing (or null choice)
+        # Deferral count was already incremented, so this counts as a deferral
+        Write-Log "User closed window without making a choice. Count already incremented." -Level Warning
+        Write-Log "Exiting with code 1 to trigger retry"
         exit 1
     }
 }

@@ -159,26 +159,36 @@ For the deferral system to work properly:
 ### User Flow
 
 1. **First Launch (Deferrals Available):**
+   - **Deferral count incremented IMMEDIATELY** (before UI shows)
    - Modern UI appears with company branding
-   - Shows main message and deferral count
+   - Shows main message with text: "You can defer this installation X more times"
    - Two buttons: "Defer" and "Install Now"
+   - **Window controls disabled:** No X, minimize, or maximize buttons
+   - **Alt+F4 blocked:** Cannot force-close the window
+   - Must click a button to proceed (Defer or Install)
 
 2. **User Clicks "Defer":**
-   - Deferral count incremented in registry
    - Script exits with code 1 (triggers SCCM retry)
    - UI closes
+   - Deferral count remains incremented (no additional increment)
 
 3. **User Clicks "Install Now":**
    - Secondary confirmation appears
    - "Are you sure?" message with two buttons:
-     - "Yes, Install Now" - proceeds with installation
+     - "Yes, Install Now" - proceeds with installation, resets deferral count to 0
      - "No, Go Back" - returns to main screen
 
-4. **Deferral Limit Reached:**
-   - Final message appears automatically
-   - Countdown timer (configurable seconds)
-   - No buttons - auto-starts Task Sequence
-   - Installation begins when countdown reaches 0
+4. **User Attempts Force-Close:**
+   - Alt+F4, Esc, and system close methods are blocked
+   - Window cannot be closed except by clicking a button
+   - If user kills process (Task Manager), deferral already counted
+
+5. **Deferral Limit Reached:**
+   - **Main dialog skipped entirely** - goes straight to countdown
+   - Only the countdown screen shows (no buttons, no options)
+   - Final message with countdown timer
+   - Auto-starts Task Sequence when countdown reaches 0
+   - Cannot be cancelled or deferred
 
 ### Technical Flow
 
@@ -189,27 +199,77 @@ Load Configuration (XML)
     ↓
 Read Registry (Current Deferral Count)
     ↓
-Show WPF UI
+INCREMENT DEFERRAL COUNT IMMEDIATELY (if not at limit)
     ↓
-User Choice?
-    ├─ Defer → Increment Registry → Exit 1 (SCCM retries later)
-    ├─ Install → Confirmation → Start Task Sequence → Exit 0
-    └─ Limit Reached → Countdown → Start Task Sequence → Exit 0
+Show WPF UI (Alt+F4 blocked, no window controls)
+    ↓
+Deferrals Remaining?
+    ├─ YES → Show Main Dialog
+    │         ├─ Defer → Exit 1 (count already incremented)
+    │         └─ Install → Confirmation → Start TS → Reset Count to 0 → Exit 0
+    │
+    └─ NO → Skip Main Dialog → Show Countdown Only
+             └─ Auto Start TS → Reset Count to 0 → Exit 0
+
+Note: Force-close blocked. Task Manager kill = deferral already counted.
 ```
 
 ## Registry Details
 
-**Default Path:**
+**Registry Structure:**
+
+The script uses a Package ID-specific subfolder to allow reuse for multiple Task Sequences:
+
 ```
-HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral
-Value: DeferralCount (DWORD)
+HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\<PackageID>\
 ```
 
+**Example with Package ID "ABC00123":**
+```
+HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123\
+    DeferralCount (DWORD)       - Current deferral count
+    Vendor (String)             - Company/vendor name (from config)
+    Product (String)            - Product name (from config)
+    Version (String)            - Version number (from config)
+    FirstRunDate (String)       - Date/time of first script execution
+```
+
+**Registry Values:**
+
+| Value | Type | Description |
+|-------|------|-------------|
+| `DeferralCount` | DWORD | Number of times installation has been deferred |
+| `Vendor` | String | Vendor/company name from config file |
+| `Product` | String | Product name from config file |
+| `Version` | String | Version number from config file |
+| `FirstRunDate` | String | Timestamp when script first ran (auto-set) |
+
 **Behavior:**
-- Incremented each time user defers
-- Reset to 0 when Task Sequence starts successfully
+- **DeferralCount incremented IMMEDIATELY when script starts** (before UI shows)
+- This ensures force-closing the window counts as a deferral
+- Clicking "Defer" button does NOT increment again (already incremented)
+- Only clicking "Install" and successfully starting TS resets count to 0
+- **Metadata set on first run:** Vendor, Product, Version, FirstRunDate
+- **Version updated on subsequent runs** if changed in config
+- FirstRunDate never changes after initial set
 - Persists across reboots
 - Can be manually modified if needed for testing
+
+**Reusability:**
+- Each Task Sequence gets its own subfolder (by Package ID)
+- Can deploy multiple TS deferral tools without conflicts
+- Example:
+  - Windows 11 Upgrade (ABC00123) → `...\ABC00123\`
+  - Office 365 Install (XYZ00456) → `...\XYZ00456\`
+  - Security Patches (DEF00789) → `...\DEF00789\`
+
+**Example Scenario:**
+1. Script starts with count = 0
+2. Count immediately increments to 1 (before UI shows)
+3. Metadata set: Vendor, Product, Version, FirstRunDate
+4. User sees "You can defer this installation 2 more times" (3 max - 1 used)
+5. User clicks "Defer" - count stays at 1, exits with code 1
+6. Next run: count = 1, increments to 2, shows "1 more time"
 
 ## Customization Guide
 
@@ -309,9 +369,13 @@ Customize all text in `DeferTSConfig.xml`:
 
 1. Check registry path permissions
 2. Verify registry path in config is correct
-3. Manually check registry:
+3. Manually check registry (replace ABC00123 with your Package ID):
    ```powershell
-   Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral"
+   Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123"
+   ```
+4. Check all registry values:
+   ```powershell
+   Get-Item -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" | Select-Object -ExpandProperty Property
    ```
 
 ### Detection Method Issues
@@ -326,39 +390,86 @@ Customize all text in `DeferTSConfig.xml`:
 
 ## Testing
 
-### Test Scenario 1: Fresh Install
+### Test Scenario 1: Fresh Install with Defer
 
-1. Deploy to test device running Windows 10
-2. Verify UI appears
-3. Click "Defer" - verify registry increments
-4. Wait for retry schedule
-5. Verify UI appears again with updated deferral count
-
-### Test Scenario 2: Install Accepted
-
-1. Click "Install Now"
-2. Verify confirmation appears
-3. Click "Yes, Install Now"
-4. Verify Task Sequence starts
-
-### Test Scenario 3: Deferral Limit Reached
-
-1. Manually set registry value to max deferrals:
+1. Reset registry (replace ABC00123 with your Package ID):
    ```powershell
-   Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name "DeferralCount" -Value 3
+   Remove-Item -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Recurse -Force -ErrorAction SilentlyContinue
+   ```
+2. Run script manually
+3. **Check registry BEFORE clicking anything** - should show deferral count AND metadata:
+   ```powershell
+   Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123"
+   ```
+   - DeferralCount should be 1
+   - Vendor, Product, Version, FirstRunDate should all be set
+4. Verify UI shows "You can defer this installation 2 more times" (assuming max = 3)
+5. Verify window has NO X, minimize, or maximize buttons
+6. Try Alt+F4 - should NOT close the window
+7. Click "Defer" - script exits with code 1
+8. **Check registry again** - DeferralCount should still be 1 (not incremented again)
+9. Run script again - DeferralCount should increment to 2
+10. Verify UI shows "You can defer this installation 1 more time"
+
+### Test Scenario 2: Window Controls Blocked
+
+1. Run script manually
+2. Try to close via Alt+F4 - should be blocked
+3. Try Esc key - should be blocked
+4. Verify NO X button in title bar (WindowStyle=None)
+5. Only way to close is clicking "Defer" or "Install Now"
+6. If process is killed via Task Manager, deferral already counted (registry already incremented)
+
+### Test Scenario 3: Install Accepted
+
+1. Run script
+2. Click "Install Now"
+3. Verify confirmation appears
+4. Click "Yes, Install Now"
+5. Verify Task Sequence starts
+6. **Check registry** - should be reset to 0
+
+### Test Scenario 4: Deferral Limit Reached (Important!)
+
+1. Manually set registry value to max deferrals (replace ABC00123 with your Package ID):
+   ```powershell
+   Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Name "DeferralCount" -Value 3
    ```
 2. Run script
-3. Verify countdown appears
-4. Verify Task Sequence auto-starts
+3. Registry should NOT increment further (already at limit)
+4. **Main dialog should be SKIPPED entirely** - no buttons, no defer option
+5. Verify countdown screen appears immediately
+6. Verify NO buttons present (cannot cancel or defer)
+7. Verify Task Sequence auto-starts after countdown completes
+
+### Test Scenario 5: Metadata Verification
+
+1. Reset registry and run script
+2. Check all registry values:
+   ```powershell
+   Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123"
+   ```
+3. Verify all values present:
+   - DeferralCount (DWORD)
+   - Vendor (String)
+   - Product (String)
+   - Version (String)
+   - FirstRunDate (String with timestamp)
+4. Update Version in DeferTSConfig.xml (e.g., 1.0.0 → 1.0.1)
+5. Run script again
+6. Verify Version updated in registry, but FirstRunDate unchanged
 
 ### Reset for Testing
 
 ```powershell
-# Reset deferral count
-Remove-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name "DeferralCount" -ErrorAction SilentlyContinue
+# Complete reset - removes entire Package ID subfolder (replace ABC00123 with your Package ID)
+Remove-Item -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Recurse -Force -ErrorAction SilentlyContinue
 
-# Or set to specific value
-Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name "DeferralCount" -Value 0
+# Or just reset deferral count
+Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Name "DeferralCount" -Value 0
+
+# View all registry values
+Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123"
 ```
 
 ## Best Practices
