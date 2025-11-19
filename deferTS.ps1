@@ -154,74 +154,91 @@ function Start-TaskSequence {
     Write-Log "Attempting to start Task Sequence: $PackageID"
 
     try {
-        # Method 1: Try using ServiceWindow ExecuteProgram with iExecuteNow parameter
-        Write-Log "Method 1: Using UIResource ExecuteProgram with immediate execution flag..."
+        # Get the Task Sequence deployment from policy
+        Write-Log "Querying CCM_SoftwareDistribution for Package ID: $PackageID"
+
+        $tsDeployment = Get-WmiObject -Namespace "ROOT\ccm\policy\machine\actualconfig" -Query "SELECT * FROM CCM_SoftwareDistribution WHERE PKG_PackageID='$PackageID'"
+
+        if (-not $tsDeployment) {
+            Write-Log "No deployment found for Package ID: $PackageID" -Level Error
+            return $false
+        }
+
+        $advID = $tsDeployment.ADV_AdvertisementID
+        Write-Log "Found Advertisement ID: $advID"
+
+        # Get the CCM_TaskSequence object
+        Write-Log "Getting CCM_TaskSequence object..."
+
+        $tsPath = "ROOT\ccm\policy\machine\actualconfig:CCM_TaskSequence.ADV_AdvertisementID='$advID',PKG_PackageID='$PackageID',PRG_ProgramID='*'"
 
         try {
-            $softwareCenter = New-Object -ComObject UIResource.UIResourceMgr
-            $availablePrograms = $softwareCenter.GetAvailableApplications()
-
-            $deployment = $availablePrograms | Where-Object { $_.PackageID -eq $PackageID }
-
-            if ($deployment) {
-                Write-Log "Found Task Sequence: $($deployment.PackageName)"
-                Write-Log "ID: $($deployment.ID), ProgramID: $($deployment.ProgramID)"
-
-                try {
-                    # Try ExecuteProgram with iExecuteNow = 1 (immediate execution)
-                    $softwareCenter.ExecuteProgram($deployment.ProgramID, $deployment.PackageID, 1)
-                    Start-Sleep -Seconds 2
-                    Write-Log "Task Sequence execution initiated (Method 1)"
-                    return $true
-                }
-                catch {
-                    Write-Log "ExecuteProgram with immediate flag failed: $($_.Exception.Message)" -Level Warning
-
-                    # Try without the third parameter
-                    try {
-                        $softwareCenter.ExecuteProgram($deployment.ProgramID, $deployment.PackageID)
-                        Start-Sleep -Seconds 2
-                        Write-Log "Task Sequence execution initiated without flag (Method 1b)"
-                        return $true
-                    }
-                    catch {
-                        Write-Log "ExecuteProgram without flag also failed: $($_.Exception.Message)" -Level Warning
-                    }
-                }
-            }
+            $taskSequence = [wmi]$tsPath
+            Write-Log "Found Task Sequence: $($taskSequence.PKG_Name)"
         }
         catch {
-            Write-Log "Method 1 failed: $_" -Level Warning
+            Write-Log "Failed to get CCM_TaskSequence object: $_" -Level Error
+            return $false
         }
 
-        # Method 2: Open Software Center to OSD page as fallback
-        Write-Log "Method 2: Opening Software Center to Task Sequence page..."
+        # Set ADV_MandatoryAssignments to True to force execution
+        Write-Log "Setting ADV_MandatoryAssignments to True..."
 
         try {
-            $scPath = Join-Path $env:SystemRoot "CCM\ClientUX\SCClient.exe"
+            $taskSequence.ADV_MandatoryAssignments = $True
+            $result = $taskSequence.Put()
+            Write-Log "ADV_MandatoryAssignments set successfully"
+        }
+        catch {
+            Write-Log "Failed to set ADV_MandatoryAssignments: $_" -Level Warning
+        }
 
-            if (Test-Path $scPath) {
-                Start-Process $scPath -ArgumentList "SoftwareCenter:Page=OSD" -ErrorAction Stop
-                Write-Log "Software Center launched - User needs to click 'Install'" -Level Warning
+        # Get or build the ScheduledMessageID
+        Write-Log "Looking for ScheduledMessageID..."
+
+        $scheduledMessage = Get-WmiObject -Namespace "ROOT\ccm\policy\machine\actualconfig" -Query "SELECT * FROM CCM_Scheduler_ScheduledMessage WHERE ScheduledMessageID LIKE '$advID-$PackageID-%'"
+
+        if ($scheduledMessage) {
+            $scheduleID = $scheduledMessage.ScheduledMessageID
+            Write-Log "Found ScheduledMessageID: $scheduleID"
+        }
+        else {
+            # If not found, try to extract from PRG_Requirements
+            if ($taskSequence.PRG_Requirements -match '<ScheduledMessageID>(.*?)</ScheduledMessageID>') {
+                $scheduleID = $matches[1]
+                Write-Log "Extracted ScheduledMessageID from PRG_Requirements: $scheduleID"
+            }
+            else {
+                Write-Log "Could not find ScheduledMessageID" -Level Error
+                return $false
+            }
+        }
+
+        # Trigger the Task Sequence using SMS_Client.TriggerSchedule
+        Write-Log "Triggering Task Sequence with schedule ID: $scheduleID"
+
+        try {
+            $smsClient = [wmiclass]'ROOT\ccm:SMS_Client'
+            $result = $smsClient.TriggerSchedule($scheduleID)
+
+            if ($result) {
+                Write-Log "Task Sequence triggered successfully!"
+                Write-Log "Return value: $($result.ReturnValue)"
                 return $true
             }
             else {
-                Write-Log "Software Center executable not found: $scPath" -Level Error
+                Write-Log "TriggerSchedule returned null" -Level Error
+                return $false
             }
         }
         catch {
-            Write-Log "Method 2 failed: $_" -Level Warning
+            Write-Log "Failed to trigger schedule: $_" -Level Error
+            return $false
         }
-
-        # All methods failed
-        Write-Log "=== Could not start Task Sequence ===" -Level Error
-        Write-Log "Package ID: $PackageID" -Level Error
-        Write-Log "User must manually open Software Center and click Install" -Level Error
-
-        return $false
     }
     catch {
         Write-Log "Error starting Task Sequence: $_" -Level Error
+        Write-Log "Stack Trace: $($_.ScriptStackTrace)" -Level Error
         return $false
     }
 }
@@ -488,42 +505,43 @@ function Show-DeferralUI {
         $deferButton.Opacity = 0.5
     }
 
-    # Defer button click
-    $deferButton.Add_Click({
-        if ($deferralsRemaining -gt 0) {
-            $script:UserChoice = 'Defer'
-            $window.Close()
-        }
-    })
-
-    # Install button click - First click
-    $installButton.Add_Click({
-        if ($secondaryPanel.Visibility -eq [System.Windows.Visibility]::Collapsed) {
-            # Show secondary confirmation
-            $mainPanel.Visibility = [System.Windows.Visibility]::Collapsed
-            $secondaryPanel.Visibility = [System.Windows.Visibility]::Visible
-            $installButton.Content = "Yes, Install Now"
-            $deferButton.Content = "No, Go Back"
-
-            # Update defer button to go back
-            $deferButton.Tag = "GoBack"
-        }
-        else {
-            # User confirmed installation
-            $script:UserChoice = 'Install'
-            $window.Close()
-        }
-    })
-
-    # Handle defer button in secondary state
+    # Defer button click - handles both "Defer" and "Go Back" states
     $deferButton.Add_Click({
         if ($deferButton.Tag -eq "GoBack") {
-            # Go back to main screen
+            # User clicked "No, Go Back" on confirmation screen
+            # Return to main screen
             $mainPanel.Visibility = [System.Windows.Visibility]::Visible
             $secondaryPanel.Visibility = [System.Windows.Visibility]::Collapsed
             $installButton.Content = "Install Now"
             $deferButton.Content = "Defer"
             $deferButton.Tag = $null
+            Write-Log "User went back from confirmation to main screen"
+        }
+        elseif ($deferralsRemaining -gt 0) {
+            # User clicked "Defer" on main screen
+            $script:UserChoice = 'Defer'
+            $window.Close()
+        }
+    })
+
+    # Install button click - handles both first click and confirmation
+    $installButton.Add_Click({
+        if ($secondaryPanel.Visibility -eq [System.Windows.Visibility]::Collapsed) {
+            # First click: Show secondary confirmation
+            $mainPanel.Visibility = [System.Windows.Visibility]::Collapsed
+            $secondaryPanel.Visibility = [System.Windows.Visibility]::Visible
+            $installButton.Content = "Yes, Install Now"
+            $deferButton.Content = "No, Go Back"
+
+            # Update defer button to go back mode
+            $deferButton.Tag = "GoBack"
+
+            Write-Log "User clicked Install Now - showing confirmation"
+        }
+        else {
+            # Second click: User confirmed installation
+            $script:UserChoice = 'Install'
+            $window.Close()
         }
     })
 
