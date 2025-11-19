@@ -390,7 +390,12 @@ function Show-DeferralUI {
     # Set deferral info
     $deferralsRemaining = $MaxDeferrals - $CurrentDeferrals
     if ($deferralsRemaining -gt 0) {
-        $deferralInfo.Text = "You have $deferralsRemaining deferral(s) remaining."
+        if ($deferralsRemaining -eq 1) {
+            $deferralInfo.Text = "You can defer this installation 1 more time."
+        }
+        else {
+            $deferralInfo.Text = "You can defer this installation $deferralsRemaining more times."
+        }
     }
     else {
         $deferralInfo.Text = "This is a required installation and cannot be deferred."
@@ -437,14 +442,24 @@ function Show-DeferralUI {
         }
     })
 
-    # If deferral limit reached, auto-start countdown
-    if ($deferralsRemaining -le 0) {
-        $window.Add_Loaded({
-            # Hide main content and buttons
-            $mainPanel.Visibility = [System.Windows.Visibility]::Collapsed
-            $buttonPanel.Visibility = [System.Windows.Visibility]::Collapsed
-            $finalPanel.Visibility = [System.Windows.Visibility]::Visible
+    # Prevent window from being closed via Alt+F4, X button, or other means (except programmatic close)
+    $window.Add_Closing({
+        param($sender, $e)
+        # Only allow closing if UserChoice has been set (programmatic close)
+        if ($null -eq $script:UserChoice) {
+            $e.Cancel = $true
+            Write-Log "User attempted to close window via system method - prevented" -Level Warning
+        }
+    })
 
+    # If deferral limit reached, skip main dialog and show countdown immediately
+    if ($deferralsRemaining -le 0) {
+        # Hide main content and buttons immediately
+        $mainPanel.Visibility = [System.Windows.Visibility]::Collapsed
+        $buttonPanel.Visibility = [System.Windows.Visibility]::Collapsed
+        $finalPanel.Visibility = [System.Windows.Visibility]::Visible
+
+        $window.Add_Loaded({
             # Start countdown
             $seconds = [int]$Config.Settings.UI.FinalMessageDuration
             $timer = New-Object System.Windows.Threading.DispatcherTimer

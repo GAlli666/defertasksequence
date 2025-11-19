@@ -65,20 +65,28 @@ Copy-Item .\* -Destination "C:\SCCMSources\DeferralTool\" -Force
 - Deadline: Set recurring (e.g., every 4 hours)
 - Rerun: **Rerun if failed previous attempt** ✓
 
-## Important: Deferral Logic
+## Important: Deferral Logic & UI Behavior
 
 **Key Behavior:**
 - Deferral count increments **IMMEDIATELY when script starts** (before UI shows)
-- This ensures force-closing the window = using a deferral
+- This ensures even Task Manager kills count as deferrals
 - Clicking "Defer" button does NOT increment again (already incremented)
 - Only successful "Install" resets count to 0
+
+**UI Features:**
+- **No window controls:** No X, minimize, or maximize buttons
+- **Alt+F4 blocked:** Cannot force-close the window
+- **Must click a button:** Only way to proceed is Defer or Install
+- **Limit reached:** Skips main dialog, shows countdown only (no buttons)
 
 **Example:**
 1. Start with count = 0
 2. Script runs → count becomes 1 (before UI)
-3. UI shows "2 deferrals remaining" (3 max - 1 used)
-4. User clicks "Defer" or force-closes → count stays 1
-5. Next run → count becomes 2, shows "1 remaining"
+3. UI shows "You can defer this installation 2 more times" (3 max - 1 used)
+4. User clicks "Defer" → count stays 1, exits with code 1
+5. Next run → count becomes 2, shows "You can defer this installation 1 more time"
+6. Next run → count becomes 3 (at limit)
+7. **Main dialog skipped** → countdown shows immediately → auto-installs
 
 ## Test Commands
 
@@ -91,7 +99,7 @@ powershell.exe -ExecutionPolicy Bypass -File ".\deferTS.ps1"
 Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name DeferralCount
 ```
 
-### Test Force-Close Behavior (Important!)
+### Test Window Controls Blocked (Important!)
 ```powershell
 # Reset count
 Remove-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name DeferralCount -ErrorAction SilentlyContinue
@@ -99,11 +107,27 @@ Remove-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Nam
 # Run script
 powershell.exe -ExecutionPolicy Bypass -File ".\deferTS.ps1"
 
+# Try Alt+F4 - should NOT close
+# Try Esc - should NOT close
+# Verify NO X button in window
+# Must click "Defer" or "Install Now" to proceed
+
 # In another PowerShell window, check registry BEFORE clicking anything
 Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name DeferralCount
-# Should show 1 even though you haven't clicked Defer yet
+# Should show 1 even before you click anything
+```
 
-# Force close the UI window - count should stay at 1
+### Test Deferral Limit Reached
+```powershell
+# Set count to max (e.g., 3)
+Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name "DeferralCount" -Value 3
+
+# Run script
+powershell.exe -ExecutionPolicy Bypass -File ".\deferTS.ps1"
+
+# Main dialog should be SKIPPED
+# Only countdown screen shows (no buttons)
+# Auto-starts Task Sequence after countdown
 ```
 
 ### Test Detection
