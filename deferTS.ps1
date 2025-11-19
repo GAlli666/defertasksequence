@@ -16,7 +16,7 @@
 .NOTES
     Author: Claude
     Date: 2025-11-19
-    Requires: PowerShell 3.0+, SCCM Client
+    Requires: PowerShell 5.1, SCCM Client
 #>
 
 [CmdletBinding()]
@@ -62,7 +62,8 @@ function Load-Configuration {
             throw "Configuration file not found: $Path"
         }
 
-        [xml]$configXml = Get-Content -Path $Path -ErrorAction Stop
+        # Read XML file as single string using -Raw (PS 5.1)
+        [xml]$configXml = Get-Content -Path $Path -Raw -ErrorAction Stop
 
         # Use Write-Host instead of Write-Log to avoid circular dependency
         # (Write-Log tries to access $script:Config which isn't set yet)
