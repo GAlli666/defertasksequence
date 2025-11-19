@@ -6,6 +6,7 @@ A modern, user-friendly PowerShell tool for providing deferral options when depl
 
 - **Modern WPF UI** (900x700 pixels) with customizable branding
 - **Deferral tracking** via registry with configurable limits
+- **Configurable timeout** on main window to prevent indefinite delays
 - **Two-step confirmation** for installations
 - **Automatic countdown** when deferral limit reached
 - **Fully configurable** via XML file (colors, text, settings)
@@ -25,7 +26,7 @@ A modern, user-friendly PowerShell tool for providing deferral options when depl
 ## Prerequisites
 
 - SCCM/ConfigMgr environment
-- PowerShell 3.0 or higher on target machines
+- PowerShell 5.1 or higher on target machines
 - Task Sequence already deployed as "Available"
 - Windows 7+ target machines (WPF support)
 
@@ -45,6 +46,9 @@ A modern, user-friendly PowerShell tool for providing deferral options when depl
 
    <!-- Customize deferral limit (default: 3) -->
    <MaxDeferrals>3</MaxDeferrals>
+
+   <!-- Customize main window timeout in minutes (default: 60) -->
+   <MainWindowTimeoutMinutes>60</MainWindowTimeoutMinutes>
 
    <!-- Customize UI messages -->
    <MainMessage>Your custom message here...</MainMessage>
@@ -165,6 +169,8 @@ For the deferral system to work properly:
    - Two buttons: "Defer" and "Install Now"
    - **Window controls disabled:** No X, minimize, or maximize buttons
    - **Alt+F4 blocked:** Cannot force-close the window
+   - **Timeout warning displayed:** Red text showing deadline and live countdown
+   - **Auto-install on timeout:** If no button clicked within configured time, installation begins automatically
    - Must click a button to proceed (Defer or Install)
 
 2. **User Clicks "Defer":**
@@ -312,8 +318,16 @@ Customize all text in `DeferTSConfig.xml`:
 <!-- Number of times user can defer -->
 <MaxDeferrals>3</MaxDeferrals>
 
+<!-- Main window timeout in minutes (default: 60) -->
+<!-- If user doesn't make a choice, installation begins automatically -->
+<MainWindowTimeoutMinutes>60</MainWindowTimeoutMinutes>
+
 <!-- Countdown duration (seconds) when limit reached -->
 <FinalMessageDuration>30</FinalMessageDuration>
+
+<!-- Timeout warning text (shown in red on main window) -->
+<TimeoutWarningText>Installation will begin</TimeoutWarningText>
+<TimeoutNoInputText>if no user input is given</TimeoutNoInputText>
 ```
 
 ### Banner Image
@@ -419,6 +433,19 @@ Customize all text in `DeferTSConfig.xml`:
 4. Verify NO X button in title bar (WindowStyle=None)
 5. Only way to close is clicking "Defer" or "Install Now"
 6. If process is killed via Task Manager, deferral already counted (registry already incremented)
+
+### Test Scenario 2b: Main Window Timeout
+
+1. Edit DeferTSConfig.xml and set MainWindowTimeoutMinutes to 1 (for testing)
+2. Run script manually
+3. Verify timeout warning displays in red:
+   - "Installation will begin"
+   - Deadline date/time (format: yyyy-MM-dd HH:mm, no seconds)
+   - "if no user input is given"
+   - Live countdown: "Time remaining: X minutes, Y seconds"
+4. Wait for countdown to reach 0
+5. Verify installation begins automatically
+6. Reset MainWindowTimeoutMinutes to normal value (e.g., 60) after testing
 
 ### Test Scenario 3: Install Accepted
 
@@ -533,9 +560,19 @@ Created by Claude for internal use. Modify as needed for your environment.
 
 ## Version History
 
+- **v1.0.1** (2025-11-19)
+  - Added configurable main window timeout feature
+  - Auto-installs if user doesn't make a choice within configured time
+  - Red warning text with deadline and live countdown
+  - All timeout text configurable via XML
+
 - **v1.0** (2025-11-19)
   - Initial release
   - WPF UI with modern design
-  - Deferral tracking via registry
+  - Deferral tracking via registry with Package ID subfolders
+  - Metadata tracking (Vendor, Product, Version, FirstRunDate)
+  - Immediate deferral count increment (prevents gaming)
+  - Window close prevention (Alt+F4, X button blocked)
+  - Skip main dialog when deferral limit reached
   - Configurable via XML
   - Windows 11 detection method
