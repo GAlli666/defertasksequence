@@ -63,27 +63,11 @@ function Load-Configuration {
         }
 
         [xml]$configXml = Get-Content -Path $Path -ErrorAction Stop
-
-        # Verify the XML was loaded and has the expected structure
-        if (-not $configXml) {
-            throw "Configuration XML is empty or invalid"
-        }
-
-        if (-not $configXml.Configuration) {
-            throw "Configuration XML missing root 'Configuration' element"
-        }
-
-        if (-not $configXml.Configuration.Settings) {
-            throw "Configuration XML missing 'Settings' element"
-        }
-
-        # Log success (note: Write-Log won't have access to config yet, that's OK)
-        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Info] Configuration loaded successfully from: $Path" -ForegroundColor Gray
-
+        Write-Log "Configuration loaded successfully from: $Path"
         return $configXml
     }
     catch {
-        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Error] Failed to load configuration: $_" -ForegroundColor Red
+        Write-Log "Failed to load configuration: $_" -Level Error
         throw
     }
 }
@@ -554,16 +538,8 @@ try {
         $ConfigFile = Join-Path $scriptDirectory $ConfigFile
     }
 
-    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Debug] Script Directory: $scriptDirectory" -ForegroundColor Cyan
-    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Debug] Config File Path: $ConfigFile" -ForegroundColor Cyan
-
     # Load configuration
     $script:Config = Load-Configuration -Path $ConfigFile
-
-    # Debug: Verify config was loaded
-    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Debug] Config object type: $($script:Config.GetType().FullName)" -ForegroundColor Cyan
-    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Debug] Config root element: $($script:Config.Configuration -ne $null)" -ForegroundColor Cyan
-    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [Debug] Config Settings element: $($script:Config.Configuration.Settings -ne $null)" -ForegroundColor Cyan
 
     Write-Log "=== Task Sequence Deferral Tool Started ==="
 
