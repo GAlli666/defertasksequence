@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Configuration file for Task Sequence Deferral Tool
+
+    Instructions:
+    1. Update TaskSequence.PackageID with your actual Task Sequence Package ID
+    2. Customize UI text messages to match your organization's needs
+    3. Adjust MaxDeferrals to control how many times users can defer
+    4. Place your banner image (900x125 pixels) in the same folder and update BannerImagePath
+    5. Customize colors using RGB values (0-255 for each component)
+-->
+<Configuration>
+    <Settings>
+        <!-- Task Sequence Configuration -->
+        <TaskSequence>
+            <!-- Replace with your actual Task Sequence Package ID (e.g., ABC00123) -->
+            <PackageID>ABC00123</PackageID>
+        </TaskSequence>
+
+        <!-- Deferral Settings -->
+        <MaxDeferrals>3</MaxDeferrals>
+
+        <!-- Registry Configuration -->
+        <!-- This registry path stores the deferral count -->
+        <RegistryPath>HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral</RegistryPath>
+        <RegistryValueName>DeferralCount</RegistryValueName>
+
+        <!-- Logging (optional - leave empty to disable file logging) -->
+        <LogPath>C:\Windows\Temp\TaskSequenceDeferral.log</LogPath>
+
+        <!-- User Interface Configuration -->
+        <UI>
+            <!-- Window Title -->
+            <WindowTitle>System Upgrade Required</WindowTitle>
+
+            <!-- Banner Image (900x125 pixels recommended) -->
+            <!-- Place image in same folder as script -->
+            <BannerImagePath>banner.png</BannerImagePath>
+
+            <!-- Banner Text (shown if image not found) -->
+            <BannerText>Windows 11 Upgrade</BannerText>
+
+            <!-- Main Screen Message -->
+            <MainMessage>A critical system upgrade to Windows 11 is required for your computer. This upgrade will enhance security, performance, and provide access to the latest features.
+
+The upgrade process will take approximately 45-60 minutes. Your files and applications will be preserved, but please save your work before proceeding.
+
+You can defer this installation a limited number of times. However, this is a mandatory upgrade and must be completed eventually.</MainMessage>
+
+            <!-- Secondary Confirmation Message (shown when user clicks Install) -->
+            <SecondaryMessage>Are you sure you want to proceed with the installation now?
+
+Please ensure you have saved all your work. The installation will begin immediately and your computer will restart several times during the process.
+
+This may take up to 60 minutes to complete.</SecondaryMessage>
+
+            <!-- Final Message (shown when deferral limit reached) -->
+            <FinalMessage>The maximum number of deferrals has been reached.
+
+The installation will begin automatically in:</FinalMessage>
+
+            <!-- How long to show the final message before auto-starting (in seconds) -->
+            <FinalMessageDuration>30</FinalMessageDuration>
+
+            <!-- Color Configuration (RGB values: 0-255) -->
+            <!-- Accent Color (darker navy blue) - used for banner and highlights -->
+            <AccentColor>20, 40, 70</AccentColor>
+
+            <!-- Font Color - used for all text -->
+            <FontColor>45, 45, 45</FontColor>
+
+            <!-- Background Color - main window background -->
+            <BackgroundColor>245, 247, 250</BackgroundColor>
+        </UI>
+    </Settings>
+</Configuration>

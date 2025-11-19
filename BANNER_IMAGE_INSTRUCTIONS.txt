@@ -1,0 +1,98 @@
+================================================================================
+BANNER IMAGE INSTRUCTIONS
+================================================================================
+
+You need to create or add a banner image for the UI.
+
+REQUIREMENTS:
+-------------
+- Image size: 900 x 125 pixels (width x height)
+- Supported formats: PNG, JPG, BMP (PNG recommended for transparency)
+- Filename: banner.png (or update DeferTSConfig.xml to match your filename)
+- Location: Place in the same folder as deferTS.ps1
+
+DESIGN RECOMMENDATIONS:
+-----------------------
+1. Use your company logo and branding
+2. Keep text minimal or none (the UI will overlay text if needed)
+3. Use high-contrast colors that match your company colors
+4. Based on your requirements, use darker navy blue theme
+5. Ensure image looks good at 900x125 resolution
+6. Test visibility on different screen brightness levels
+
+COLOR SCHEME (from your requirements):
+--------------------------------------
+- Primary/Accent: Darker Navy Blue - RGB(20, 40, 70)
+- Background: Light Blue-Gray - RGB(245, 247, 250)
+- Text: Dark Gray - RGB(45, 45, 45)
+
+CREATING THE BANNER:
+--------------------
+You can create the banner using:
+
+1. Professional Design Tools:
+   - Adobe Photoshop
+   - Adobe Illustrator
+   - Canva (free online tool)
+   - GIMP (free alternative to Photoshop)
+
+2. Simple Tools:
+   - Microsoft PowerPoint
+     * Create slide with 900x125 dimensions
+     * Add logo/graphics
+     * Export as PNG
+
+   - Paint.NET (Windows)
+   - Preview (Mac)
+
+3. Online Generators:
+   - Canva.com (has banner templates)
+   - Photopea.com (free Photoshop alternative)
+   - Remove.bg for background removal
+
+EXAMPLE BANNER IDEAS:
+---------------------
+
+Option 1: Logo + Text
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│  [COMPANY LOGO]          Windows 11 Upgrade Required                    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Option 2: Full-Width Branded
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│           COMPANY NAME  •  SYSTEM UPGRADE  •  WINDOWS 11                │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Option 3: Gradient Background with Logo
+┌─────────────────────────────────────────────────────────────────────────┐
+│  [Darker Navy Blue Gradient Background]                                 │
+│                      [Centered Company Logo]                            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+TESTING YOUR BANNER:
+--------------------
+1. Save as banner.png in the same folder as deferTS.ps1
+2. Run the script to preview:
+   powershell.exe -ExecutionPolicy Bypass -File ".\deferTS.ps1"
+3. Check if image displays correctly
+4. Adjust colors/sizing if needed
+
+FALLBACK:
+---------
+If no banner image is provided, the UI will display the BannerText from
+DeferTSConfig.xml instead. The banner area will use the accent color
+(darker navy blue) as the background.
+
+TROUBLESHOOTING:
+----------------
+- Image not showing: Check file path and filename match config
+- Image distorted: Ensure image is exactly 900x125 pixels
+- Colors look off: Check if PNG has transparency, use JPG if needed
+- File too large: Compress PNG or convert to optimized JPG
+
+================================================================================
