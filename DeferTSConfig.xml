@@ -17,11 +17,19 @@
             <PackageID>ABC00123</PackageID>
         </TaskSequence>
 
+        <!-- Application Metadata (stored in registry for tracking) -->
+        <Application>
+            <Vendor>Your Company Name</Vendor>
+            <Product>Windows 11 Upgrade</Product>
+            <Version>1.0.0</Version>
+        </Application>
+
         <!-- Deferral Settings -->
         <MaxDeferrals>3</MaxDeferrals>
 
         <!-- Registry Configuration -->
-        <!-- This registry path stores the deferral count -->
+        <!-- Base registry path - a subfolder with the Package ID will be created automatically -->
+        <!-- Final path will be: HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123 -->
         <RegistryPath>HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral</RegistryPath>
         <RegistryValueName>DeferralCount</RegistryValueName>
 

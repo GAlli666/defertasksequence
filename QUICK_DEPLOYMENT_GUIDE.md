@@ -95,14 +95,15 @@ Copy-Item .\* -Destination "C:\SCCMSources\DeferralTool\" -Force
 # Run interactively
 powershell.exe -ExecutionPolicy Bypass -File ".\deferTS.ps1"
 
-# Check registry (should increment immediately when script runs)
-Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name DeferralCount
+# Check registry (replace ABC00123 with your Package ID)
+# Should show DeferralCount AND metadata (Vendor, Product, Version, FirstRunDate)
+Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123"
 ```
 
 ### Test Window Controls Blocked (Important!)
 ```powershell
-# Reset count
-Remove-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name DeferralCount -ErrorAction SilentlyContinue
+# Reset count (replace ABC00123 with your Package ID)
+Remove-Item -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Recurse -Force -ErrorAction SilentlyContinue
 
 # Run script
 powershell.exe -ExecutionPolicy Bypass -File ".\deferTS.ps1"
@@ -113,14 +114,27 @@ powershell.exe -ExecutionPolicy Bypass -File ".\deferTS.ps1"
 # Must click "Defer" or "Install Now" to proceed
 
 # In another PowerShell window, check registry BEFORE clicking anything
-Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name DeferralCount
-# Should show 1 even before you click anything
+Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123"
+# Should show DeferralCount=1 AND all metadata values
+```
+
+### Test Metadata
+```powershell
+# Check all registry values (replace ABC00123 with your Package ID)
+Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123"
+
+# Expected output:
+# DeferralCount : 1
+# Vendor        : Your Company Name
+# Product       : Windows 11 Upgrade
+# Version       : 1.0.0
+# FirstRunDate  : 2025-11-19 14:30:25
 ```
 
 ### Test Deferral Limit Reached
 ```powershell
-# Set count to max (e.g., 3)
-Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name "DeferralCount" -Value 3
+# Set count to max (replace ABC00123 with your Package ID)
+Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Name "DeferralCount" -Value 3
 
 # Run script
 powershell.exe -ExecutionPolicy Bypass -File ".\deferTS.ps1"
@@ -138,7 +152,8 @@ powershell.exe -ExecutionPolicy Bypass -File ".\Detect-Windows11.ps1"
 
 ### Reset Deferrals
 ```powershell
-Remove-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name DeferralCount -ErrorAction SilentlyContinue
+# Complete reset (replace ABC00123 with your Package ID)
+Remove-Item -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
 ## Common Issues
@@ -174,10 +189,24 @@ Remove-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Nam
 
 **Registry Check:**
 ```powershell
-# Check deferral counts across devices
+# Check deferral counts across devices (replace ABC00123 with your Package ID)
 Invoke-Command -ComputerName (Get-Content .\computers.txt) -ScriptBlock {
-    Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name DeferralCount -ErrorAction SilentlyContinue
+    $packageID = "ABC00123"
+    $regPath = "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\$packageID"
+
+    if (Test-Path $regPath) {
+        Get-ItemProperty -Path $regPath | Select-Object PSComputerName, DeferralCount, Vendor, Product, Version, FirstRunDate
+    }
+    else {
+        [PSCustomObject]@{
+            PSComputerName = $env:COMPUTERNAME
+            Status = "Not Started"
+        }
+    }
 }
+
+# View all Package IDs being tracked
+Get-ChildItem -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -ErrorAction SilentlyContinue | Select-Object PSChildName
 ```
 
 ## Rollback Plan

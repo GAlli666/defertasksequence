@@ -97,7 +97,8 @@ function Set-DeferralCount {
     param(
         [string]$RegistryPath,
         [string]$ValueName,
-        [int]$Count
+        [int]$Count,
+        [hashtable]$Metadata = $null
     )
 
     try {
@@ -107,8 +108,32 @@ function Set-DeferralCount {
             Write-Log "Created registry path: $RegistryPath"
         }
 
+        # Set deferral count
         Set-ItemProperty -Path $RegistryPath -Name $ValueName -Value $Count -Type DWord -Force
         Write-Log "Set deferral count to: $Count"
+
+        # If metadata provided and FirstRunDate doesn't exist, set all metadata
+        if ($Metadata) {
+            $existingFirstRun = Get-ItemProperty -Path $RegistryPath -Name "FirstRunDate" -ErrorAction SilentlyContinue
+
+            if (-not $existingFirstRun) {
+                # First time - set all metadata
+                Set-ItemProperty -Path $RegistryPath -Name "Vendor" -Value $Metadata.Vendor -Type String -Force
+                Set-ItemProperty -Path $RegistryPath -Name "Product" -Value $Metadata.Product -Type String -Force
+                Set-ItemProperty -Path $RegistryPath -Name "Version" -Value $Metadata.Version -Type String -Force
+                Set-ItemProperty -Path $RegistryPath -Name "FirstRunDate" -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss") -Type String -Force
+                Write-Log "Set application metadata: $($Metadata.Vendor) - $($Metadata.Product) v$($Metadata.Version)"
+            }
+            else {
+                # Subsequent runs - update version if changed
+                $existingVersion = Get-ItemProperty -Path $RegistryPath -Name "Version" -ErrorAction SilentlyContinue
+                if ($existingVersion -and $existingVersion.Version -ne $Metadata.Version) {
+                    Set-ItemProperty -Path $RegistryPath -Name "Version" -Value $Metadata.Version -Type String -Force
+                    Write-Log "Updated version to: $($Metadata.Version)"
+                }
+            }
+        }
+
         return $true
     }
     catch {
@@ -499,13 +524,25 @@ try {
 
     # Get configuration values
     $maxDeferrals = [int]$Config.Settings.MaxDeferrals
-    $registryPath = $Config.Settings.RegistryPath
+    $registryBasePath = $Config.Settings.RegistryPath
     $registryValue = $Config.Settings.RegistryValueName
     $packageID = $Config.Settings.TaskSequence.PackageID
+
+    # Build registry path with Package ID as subfolder
+    # This allows reuse of the solution for multiple Task Sequences
+    $registryPath = Join-Path $registryBasePath $packageID
+
+    # Create metadata hashtable from config
+    $metadata = @{
+        Vendor  = $Config.Settings.Application.Vendor
+        Product = $Config.Settings.Application.Product
+        Version = $Config.Settings.Application.Version
+    }
 
     Write-Log "Max Deferrals: $maxDeferrals"
     Write-Log "Registry Path: $registryPath"
     Write-Log "Task Sequence Package ID: $packageID"
+    Write-Log "Application: $($metadata.Vendor) - $($metadata.Product) v$($metadata.Version)"
 
     # Get current deferral count
     $currentDeferrals = Get-DeferralCount -RegistryPath $registryPath -ValueName $registryValue
@@ -518,7 +555,7 @@ try {
     # This ensures that force-closing the window counts as a deferral
     if ($deferralsRemaining -gt 0) {
         $newCount = $currentDeferrals + 1
-        if (Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count $newCount) {
+        if (Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count $newCount -Metadata $metadata) {
             Write-Log "Deferral count incremented immediately: $newCount / $maxDeferrals"
             Write-Log "This ensures force-close counts as a deferral"
             # Update current count to reflect the increment
@@ -553,7 +590,7 @@ try {
             Write-Log "Task Sequence started successfully"
 
             # Reset deferral count after successful start
-            Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count 0
+            Set-DeferralCount -RegistryPath $registryPath -ValueName $registryValue -Count 0 -Metadata $metadata
             Write-Log "Deferral count reset to 0"
 
             Write-Log "=== Task Sequence Deferral Tool Completed Successfully ==="

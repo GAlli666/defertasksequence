@@ -216,26 +216,60 @@ Note: Force-close blocked. Task Manager kill = deferral already counted.
 
 ## Registry Details
 
-**Default Path:**
+**Registry Structure:**
+
+The script uses a Package ID-specific subfolder to allow reuse for multiple Task Sequences:
+
 ```
-HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral
-Value: DeferralCount (DWORD)
+HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\<PackageID>\
 ```
 
+**Example with Package ID "ABC00123":**
+```
+HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123\
+    DeferralCount (DWORD)       - Current deferral count
+    Vendor (String)             - Company/vendor name (from config)
+    Product (String)            - Product name (from config)
+    Version (String)            - Version number (from config)
+    FirstRunDate (String)       - Date/time of first script execution
+```
+
+**Registry Values:**
+
+| Value | Type | Description |
+|-------|------|-------------|
+| `DeferralCount` | DWORD | Number of times installation has been deferred |
+| `Vendor` | String | Vendor/company name from config file |
+| `Product` | String | Product name from config file |
+| `Version` | String | Version number from config file |
+| `FirstRunDate` | String | Timestamp when script first ran (auto-set) |
+
 **Behavior:**
-- **Incremented IMMEDIATELY when script starts** (before UI shows)
+- **DeferralCount incremented IMMEDIATELY when script starts** (before UI shows)
 - This ensures force-closing the window counts as a deferral
 - Clicking "Defer" button does NOT increment again (already incremented)
 - Only clicking "Install" and successfully starting TS resets count to 0
+- **Metadata set on first run:** Vendor, Product, Version, FirstRunDate
+- **Version updated on subsequent runs** if changed in config
+- FirstRunDate never changes after initial set
 - Persists across reboots
 - Can be manually modified if needed for testing
+
+**Reusability:**
+- Each Task Sequence gets its own subfolder (by Package ID)
+- Can deploy multiple TS deferral tools without conflicts
+- Example:
+  - Windows 11 Upgrade (ABC00123) → `...\ABC00123\`
+  - Office 365 Install (XYZ00456) → `...\XYZ00456\`
+  - Security Patches (DEF00789) → `...\DEF00789\`
 
 **Example Scenario:**
 1. Script starts with count = 0
 2. Count immediately increments to 1 (before UI shows)
-3. User sees "You have 2 deferral(s) remaining" (3 max - 1 used = 2 remaining)
-4. User clicks "Defer" - count stays at 1, exits with code 1
-5. Next time script runs: count = 1, increments to 2, shows "1 remaining"
+3. Metadata set: Vendor, Product, Version, FirstRunDate
+4. User sees "You can defer this installation 2 more times" (3 max - 1 used)
+5. User clicks "Defer" - count stays at 1, exits with code 1
+6. Next run: count = 1, increments to 2, shows "1 more time"
 
 ## Customization Guide
 
@@ -335,9 +369,13 @@ Customize all text in `DeferTSConfig.xml`:
 
 1. Check registry path permissions
 2. Verify registry path in config is correct
-3. Manually check registry:
+3. Manually check registry (replace ABC00123 with your Package ID):
    ```powershell
-   Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral"
+   Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123"
+   ```
+4. Check all registry values:
+   ```powershell
+   Get-Item -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" | Select-Object -ExpandProperty Property
    ```
 
 ### Detection Method Issues
@@ -354,15 +392,23 @@ Customize all text in `DeferTSConfig.xml`:
 
 ### Test Scenario 1: Fresh Install with Defer
 
-1. Reset registry: `Remove-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name "DeferralCount" -ErrorAction SilentlyContinue`
+1. Reset registry (replace ABC00123 with your Package ID):
+   ```powershell
+   Remove-Item -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Recurse -Force -ErrorAction SilentlyContinue
+   ```
 2. Run script manually
-3. **Check registry BEFORE clicking anything** - should already be incremented to 1
+3. **Check registry BEFORE clicking anything** - should show deferral count AND metadata:
+   ```powershell
+   Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123"
+   ```
+   - DeferralCount should be 1
+   - Vendor, Product, Version, FirstRunDate should all be set
 4. Verify UI shows "You can defer this installation 2 more times" (assuming max = 3)
 5. Verify window has NO X, minimize, or maximize buttons
 6. Try Alt+F4 - should NOT close the window
 7. Click "Defer" - script exits with code 1
-8. **Check registry again** - should still be 1 (not incremented again)
-9. Run script again - registry should increment to 2
+8. **Check registry again** - DeferralCount should still be 1 (not incremented again)
+9. Run script again - DeferralCount should increment to 2
 10. Verify UI shows "You can defer this installation 1 more time"
 
 ### Test Scenario 2: Window Controls Blocked
@@ -385,9 +431,9 @@ Customize all text in `DeferTSConfig.xml`:
 
 ### Test Scenario 4: Deferral Limit Reached (Important!)
 
-1. Manually set registry value to max deferrals:
+1. Manually set registry value to max deferrals (replace ABC00123 with your Package ID):
    ```powershell
-   Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name "DeferralCount" -Value 3
+   Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Name "DeferralCount" -Value 3
    ```
 2. Run script
 3. Registry should NOT increment further (already at limit)
@@ -396,14 +442,34 @@ Customize all text in `DeferTSConfig.xml`:
 6. Verify NO buttons present (cannot cancel or defer)
 7. Verify Task Sequence auto-starts after countdown completes
 
+### Test Scenario 5: Metadata Verification
+
+1. Reset registry and run script
+2. Check all registry values:
+   ```powershell
+   Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123"
+   ```
+3. Verify all values present:
+   - DeferralCount (DWORD)
+   - Vendor (String)
+   - Product (String)
+   - Version (String)
+   - FirstRunDate (String with timestamp)
+4. Update Version in DeferTSConfig.xml (e.g., 1.0.0 → 1.0.1)
+5. Run script again
+6. Verify Version updated in registry, but FirstRunDate unchanged
+
 ### Reset for Testing
 
 ```powershell
-# Reset deferral count
-Remove-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name "DeferralCount" -ErrorAction SilentlyContinue
+# Complete reset - removes entire Package ID subfolder (replace ABC00123 with your Package ID)
+Remove-Item -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Recurse -Force -ErrorAction SilentlyContinue
 
-# Or set to specific value
-Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral" -Name "DeferralCount" -Value 0
+# Or just reset deferral count
+Set-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123" -Name "DeferralCount" -Value 0
+
+# View all registry values
+Get-ItemProperty -Path "HKLM:\SOFTWARE\YourCompany\TaskSequenceDeferral\ABC00123"
 ```
 
 ## Best Practices
