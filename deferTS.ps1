@@ -16,7 +16,7 @@
 .NOTES
     Author: Claude
     Date: 2025-11-19
-    Requires: PowerShell 3.0+, SCCM Client
+    Requires: PowerShell 5.1, SCCM Client
 #>
 
 [CmdletBinding()]
@@ -62,15 +62,8 @@ function Load-Configuration {
             throw "Configuration file not found: $Path"
         }
 
-        # Read XML file - use -Raw for PS 3.0+ or join lines for older versions
-        # This ensures the XML is read as a single string, not an array of lines
-        if ($PSVersionTable.PSVersion.Major -ge 3) {
-            [xml]$configXml = Get-Content -Path $Path -Raw -ErrorAction Stop
-        }
-        else {
-            # Fallback for PS 2.0 (though we target 3.0+)
-            [xml]$configXml = (Get-Content -Path $Path -ErrorAction Stop) -join "`n"
-        }
+        # Read XML file as single string using -Raw (PS 5.1)
+        [xml]$configXml = Get-Content -Path $Path -Raw -ErrorAction Stop
 
         # Use Write-Host instead of Write-Log to avoid circular dependency
         # (Write-Log tries to access $script:Config which isn't set yet)
