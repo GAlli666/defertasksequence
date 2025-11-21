@@ -148,6 +148,35 @@ function Set-DeferralCount {
     }
 }
 
+function Test-TaskSequenceRunning {
+    <#
+    .SYNOPSIS
+        Checks if a Task Sequence is currently running
+    .DESCRIPTION
+        Looks for TSManager.exe process which indicates a Task Sequence is executing
+    .OUTPUTS
+        Boolean - True if Task Sequence is running, False otherwise
+    #>
+
+    try {
+        $tsProcess = Get-Process -Name "TSManager" -ErrorAction SilentlyContinue
+
+        if ($tsProcess) {
+            Write-Log "TSManager.exe is currently running - Task Sequence already in progress" -Level Warning
+            return $true
+        }
+        else {
+            Write-Log "TSManager.exe not found - no Task Sequence currently running"
+            return $false
+        }
+    }
+    catch {
+        Write-Log "Error checking for TSManager.exe: $_" -Level Warning
+        # If we can't check, assume not running
+        return $false
+    }
+}
+
 function Start-TaskSequence {
     param([string]$PackageID)
 
@@ -685,6 +714,13 @@ try {
 
     Write-Log "=== Task Sequence Deferral Tool Started ==="
 
+    # Check if Task Sequence is already running
+    if (Test-TaskSequenceRunning) {
+        Write-Log "Task Sequence already in progress - exiting immediately without UI" -Level Warning
+        Write-Log "Exiting with code 1618 to prevent interference with running Task Sequence"
+        exit 1618
+    }
+
     # Get configuration values
     # Add 1 to MaxDeferrals so config value matches what users actually see
     # If config says 3, users will see "You can defer this installation 3 more times" on first run
@@ -766,7 +802,8 @@ try {
             Write-Log "Failed to start Task Sequence" -Level Error
             Write-Log "Note: Deferral count was reset - user will have full deferrals on next run" -Level Warning
             Write-Log "=== Task Sequence Deferral Tool Completed with Errors ==="
-            exit 1618
+            Write-Log "Exiting with code 0 as requested (Task Sequence trigger was attempted)"
+            exit 0
         }
     }
     else {
