@@ -14,7 +14,7 @@
     - Exits with error code 1 when deferred to trigger retry
 
 .NOTES
-    Author: Claude
+    
     Date: 2025-11-19
     Requires: PowerShell 5.1, SCCM Client
 #>
@@ -745,7 +745,7 @@ try {
         # Just exit with error code 1 to trigger retry by SCCM
         Write-Log "User chose to defer. Count already incremented to: $currentDeferrals / $maxDeferrals"
         Write-Log "Exiting with code 1 to trigger retry"
-        exit 1
+        exit 1618
     }
     elseif ($userChoice -eq 'Install') {
         # User chose to install - reset deferral count BEFORE starting TS
@@ -766,7 +766,7 @@ try {
             Write-Log "Failed to start Task Sequence" -Level Error
             Write-Log "Note: Deferral count was reset - user will have full deferrals on next run" -Level Warning
             Write-Log "=== Task Sequence Deferral Tool Completed with Errors ==="
-            exit 1
+            exit 1618
         }
     }
     else {
@@ -774,13 +774,13 @@ try {
         # Deferral count was already incremented, so this counts as a deferral
         Write-Log "User closed window without making a choice. Count already incremented." -Level Warning
         Write-Log "Exiting with code 1 to trigger retry"
-        exit 1
+        exit 1618
     }
 }
 catch {
     Write-Log "Critical error: $_" -Level Error
     Write-Log $_.ScriptStackTrace -Level Error
-    exit 1
+    exit 1618
 }
 
 #endregion
