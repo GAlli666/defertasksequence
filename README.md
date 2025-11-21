@@ -12,12 +12,15 @@ A modern, user-friendly PowerShell tool for providing deferral options when depl
 - **Fully configurable** via XML file (colors, text, settings)
 - **Comprehensive logging** for troubleshooting
 - **Exit code 1** on deferral to trigger SCCM retry
+- **Hidden console** support for SCCM deployments via VBScript wrapper
+- **Task Sequence detection** - automatically exits if Task Sequence already running
 
 ## Files Included
 
 | File | Description |
 |------|-------------|
 | `deferTS.ps1` | Main deferral tool script with WPF UI |
+| `LaunchDeferTS.vbs` | VBScript wrapper for hidden console execution from SCCM |
 | `DeferTSConfig.xml` | Configuration file for all settings |
 | `Detect-Windows11.ps1` | Detection method script for Windows 11 |
 | `README.md` | This file - deployment instructions |
@@ -77,13 +80,20 @@ A modern, user-friendly PowerShell tool for providing deferral options when depl
 
    - **Content location:**
      - Create a network share (e.g., `\\server\share\DeferralTool`)
-     - Copy all files (deferTS.ps1, DeferTSConfig.xml, banner.png) to this location
+     - Copy all files (deferTS.ps1, LaunchDeferTS.vbs, DeferTSConfig.xml, banner.png) to this location
      - Set content location to this path
 
-   - **Installation program:**
+   - **Installation program (RECOMMENDED - Hidden Console):**
+     ```cmd
+     wscript.exe ".\LaunchDeferTS.vbs"
+     ```
+     **Note:** This is the recommended method as it ensures no console window is visible to users.
+
+   - **Alternative Installation program (PowerShell direct):**
      ```powershell
      powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File ".\deferTS.ps1"
      ```
+     **Note:** This method may briefly show a console window on some systems.
 
    - **Uninstall program:**
      ```powershell
@@ -203,6 +213,10 @@ For the deferral system to work properly:
 Script Start
     ↓
 Load Configuration (XML)
+    ↓
+Check if TSManager.exe Running
+    ├─ YES → Exit 1618 (TS already running - prevent interference)
+    └─ NO → Continue
     ↓
 Read Registry (Current Deferral Count)
     ↓
@@ -564,6 +578,12 @@ For issues or questions:
 Created by Claude for internal use. Modify as needed for your environment.
 
 ## Version History
+
+- **v1.1.0** (2025-11-21)
+  - Added VBScript wrapper (LaunchDeferTS.vbs) for completely hidden console execution from SCCM
+  - Added TSManager.exe detection to prevent running when Task Sequence already in progress
+  - Changed exit code to 0 when Task Sequence trigger is attempted (success or failure)
+  - Updated documentation with recommended SCCM installation command
 
 - **v1.0.1** (2025-11-19)
   - Added configurable main window timeout feature
