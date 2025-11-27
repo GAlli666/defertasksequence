@@ -240,15 +240,49 @@ function Connect-ToSCCM {
     try {
         Write-Host "Connecting to SCCM Site: $SiteCode on $SiteServer" -ForegroundColor Cyan
 
-        # Import ConfigurationManager module
-        if (-not (Get-Module -Name ConfigurationManager)) {
-            Import-Module "$($ENV:SMS_ADMIN_UI_PATH)\..\ConfigurationManager.psd1" -ErrorAction Stop
+        # Validate parameters
+        if ([string]::IsNullOrEmpty($SiteCode)) {
+            throw "Site Code is null or empty"
+        }
+        if ([string]::IsNullOrEmpty($SiteServer)) {
+            throw "Site Server is null or empty"
         }
 
-        # Connect to site
+        # Import ConfigurationManager module
+        Write-Host "Checking for ConfigurationManager module..." -ForegroundColor Cyan
+        if (-not (Get-Module -Name ConfigurationManager)) {
+            Write-Host "Importing ConfigurationManager module..." -ForegroundColor Cyan
+
+            if (-not $ENV:SMS_ADMIN_UI_PATH) {
+                throw "SMS_ADMIN_UI_PATH environment variable not found. Please ensure SCCM Console is installed."
+            }
+
+            $modulePath = "$($ENV:SMS_ADMIN_UI_PATH)\..\ConfigurationManager.psd1"
+            Write-Host "Module path: $modulePath" -ForegroundColor Cyan
+
+            Import-Module $modulePath -ErrorAction Stop
+            Write-Host "Module imported successfully" -ForegroundColor Green
+        } else {
+            Write-Host "ConfigurationManager module already loaded" -ForegroundColor Green
+        }
+
+        # Check if PSDrive already exists
         $siteCodePath = "$SiteCode" + ":"
-        if (-not (Get-PSDrive -Name $SiteCode -PSProvider CMSite -ErrorAction SilentlyContinue)) {
-            New-PSDrive -Name $SiteCode -PSProvider CMSite -Root $SiteServer -ErrorAction Stop | Out-Null
+        $existingDrive = Get-PSDrive -Name $SiteCode -PSProvider CMSite -ErrorAction SilentlyContinue
+
+        if ($existingDrive) {
+            Write-Host "PSDrive $SiteCode already exists" -ForegroundColor Green
+        } else {
+            # Create new PSDrive
+            Write-Host "Creating new PSDrive: $SiteCode connected to $SiteServer" -ForegroundColor Cyan
+
+            $newDrive = New-PSDrive -Name $SiteCode -PSProvider CMSite -Root $SiteServer -ErrorAction Stop
+
+            if ($newDrive) {
+                Write-Host "PSDrive created successfully: $($newDrive.Name)" -ForegroundColor Green
+            } else {
+                throw "New-PSDrive returned null"
+            }
         }
 
         # Store site code in script variable for later use
@@ -259,6 +293,10 @@ function Connect-ToSCCM {
     }
     catch {
         Write-Host "Failed to connect to SCCM: $_" -ForegroundColor Red
+        Write-Host "Error details: $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
         return $false
     }
 }
@@ -412,16 +450,16 @@ function Show-MainWindow {
 
                 <!-- Row 1: Site Code and Site Server -->
                 <Label Grid.Row="0" Grid.Column="0" Content="Site Code:" Style="{StaticResource ModernLabel}" VerticalAlignment="Center"/>
-                <TextBox Grid.Row="0" Grid.Column="1" Name="txtSiteCode" Style="{StaticResource ModernTextBox}" Margin="0,5,20,5"/>
+                <TextBox Grid.Row="0" Grid.Column="1" Name="txtSiteCode" Style="{StaticResource ModernTextBox}" Text="ABC" Margin="0,5,20,5"/>
 
                 <Label Grid.Row="0" Grid.Column="2" Content="Site Server:" Style="{StaticResource ModernLabel}" VerticalAlignment="Center"/>
-                <TextBox Grid.Row="0" Grid.Column="3" Name="txtSiteServer" Style="{StaticResource ModernTextBox}" Margin="0,5,20,5"/>
+                <TextBox Grid.Row="0" Grid.Column="3" Name="txtSiteServer" Style="{StaticResource ModernTextBox}" Text="sccm01.contoso.com" Margin="0,5,20,5"/>
 
                 <Button Grid.Row="0" Grid.Column="4" Name="btnConnect" Content="Connect" Style="{StaticResource ModernButton}" Width="120" Margin="0,5,0,5"/>
 
                 <!-- Row 2: Collection ID and Log Path -->
                 <Label Grid.Row="1" Grid.Column="0" Content="Collection ID:" Style="{StaticResource ModernLabel}" VerticalAlignment="Center"/>
-                <TextBox Grid.Row="1" Grid.Column="1" Name="txtCollectionID" Style="{StaticResource ModernTextBox}" Margin="0,5,20,5"/>
+                <TextBox Grid.Row="1" Grid.Column="1" Name="txtCollectionID" Style="{StaticResource ModernTextBox}" Text="ABC00123" Margin="0,5,20,5"/>
 
                 <Label Grid.Row="1" Grid.Column="2" Content="Log File Path:" Style="{StaticResource ModernLabel}" VerticalAlignment="Center"/>
                 <TextBox Grid.Row="1" Grid.Column="3" Name="txtLogPath" Style="{StaticResource ModernTextBox}" Text="C:\Windows\ccm\logs\TaskSequenceDeferral.log" Margin="0,5,20,5"/>
