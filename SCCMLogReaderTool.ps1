@@ -627,32 +627,32 @@ function Show-MainWindow {
 
     # Connect button click
     $btnConnect.Add_Click({
-        $siteCode = $txtSiteCode.Text.Trim()
-        $siteServer = $txtSiteServer.Text.Trim()
+        $siteCode = $script:txtSiteCode.Text.Trim()
+        $siteServer = $script:txtSiteServer.Text.Trim()
 
         if ([string]::IsNullOrEmpty($siteCode) -or [string]::IsNullOrEmpty($siteServer)) {
             [System.Windows.MessageBox]::Show("Please enter both Site Code and Site Server", "Input Required", "OK", "Warning")
             return
         }
 
-        $txtStatus.Text = "Connecting to SCCM..."
-        $btnConnect.IsEnabled = $false
+        $script:txtStatus.Text = "Connecting to SCCM..."
+        $script:btnConnect.IsEnabled = $false
 
         if (Connect-ToSCCM -SiteCode $siteCode -SiteServer $siteServer) {
-            $txtStatus.Text = "Connected to SCCM site: $siteCode"
-            $txtStatus.Foreground = "#2ECC71"
-            $btnScan.IsEnabled = $true
+            $script:txtStatus.Text = "Connected to SCCM site: $siteCode"
+            $script:txtStatus.Foreground = "#2ECC71"
+            $script:btnScan.IsEnabled = $true
         } else {
-            $txtStatus.Text = "Failed to connect to SCCM"
-            $txtStatus.Foreground = "#E74C3C"
-            $btnConnect.IsEnabled = $true
+            $script:txtStatus.Text = "Failed to connect to SCCM"
+            $script:txtStatus.Foreground = "#E74C3C"
+            $script:btnConnect.IsEnabled = $true
         }
     })
 
     # Scan button click
     $btnScan.Add_Click({
-        $collectionID = $txtCollectionID.Text.Trim()
-        $logPath = $txtLogPath.Text.Trim()
+        $collectionID = $script:txtCollectionID.Text.Trim()
+        $logPath = $script:txtLogPath.Text.Trim()
 
         if ([string]::IsNullOrEmpty($collectionID)) {
             [System.Windows.MessageBox]::Show("Please enter a Collection ID", "Input Required", "OK", "Warning")
@@ -667,34 +667,34 @@ function Show-MainWindow {
         # Clear previous results
         $script:computerStatuses.Clear()
 
-        $txtStatus.Text = "Retrieving collection members..."
-        $btnScan.IsEnabled = $false
-        $progressBar.Visibility = "Visible"
-        $progressBar.IsIndeterminate = $true
+        $script:txtStatus.Text = "Retrieving collection members..."
+        $script:btnScan.IsEnabled = $false
+        $script:progressBar.Visibility = "Visible"
+        $script:progressBar.IsIndeterminate = $true
 
         # Get collection members
         $members = Get-CollectionMembers -CollectionID $collectionID
 
         if ($null -eq $members) {
-            $txtStatus.Text = "Failed to retrieve collection members"
-            $txtStatus.Foreground = "#E74C3C"
-            $btnScan.IsEnabled = $true
-            $progressBar.Visibility = "Collapsed"
+            $script:txtStatus.Text = "Failed to retrieve collection members"
+            $script:txtStatus.Foreground = "#E74C3C"
+            $script:btnScan.IsEnabled = $true
+            $script:progressBar.Visibility = "Collapsed"
             return
         }
 
         if ($members.Count -eq 0) {
-            $txtStatus.Text = "No members found in collection"
-            $txtStatus.Foreground = "#F39C12"
-            $btnScan.IsEnabled = $true
-            $progressBar.Visibility = "Collapsed"
+            $script:txtStatus.Text = "No members found in collection"
+            $script:txtStatus.Foreground = "#F39C12"
+            $script:btnScan.IsEnabled = $true
+            $script:progressBar.Visibility = "Collapsed"
             return
         }
 
-        $txtStatus.Text = "Scanning $($members.Count) computers..."
-        $progressBar.IsIndeterminate = $false
-        $progressBar.Maximum = $members.Count
-        $progressBar.Value = 0
+        $script:txtStatus.Text = "Scanning $($members.Count) computers..."
+        $script:progressBar.IsIndeterminate = $false
+        $script:progressBar.Maximum = $members.Count
+        $script:progressBar.Value = 0
 
         # Process each member
         $count = 0
@@ -707,17 +707,17 @@ function Show-MainWindow {
             $status = Parse-LogFile -LogPath $logPath -ComputerName $computerName
             $script:computerStatuses.Add($status)
 
-            $progressBar.Value = $count
-            $txtStatus.Text = "Scanned $count / $($members.Count) computers..."
+            $script:progressBar.Value = $count
+            $script:txtStatus.Text = "Scanned $count / $($members.Count) computers..."
 
             # Allow UI to update
             [System.Windows.Forms.Application]::DoEvents()
         }
 
-        $txtStatus.Text = "Scan complete. $($members.Count) computers processed."
-        $txtStatus.Foreground = "#2ECC71"
-        $btnScan.IsEnabled = $true
-        $progressBar.Visibility = "Collapsed"
+        $script:txtStatus.Text = "Scan complete. $($members.Count) computers processed."
+        $script:txtStatus.Foreground = "#2ECC71"
+        $script:btnScan.IsEnabled = $true
+        $script:progressBar.Visibility = "Collapsed"
 
         Write-Host "`nScan complete!" -ForegroundColor Green
     })
