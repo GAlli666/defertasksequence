@@ -55,15 +55,21 @@ A diagnostic tool that connects to SCCM, retrieves collection members, and reads
 
 ### Step 2: Connect to SCCM
 
-1. Enter your **Site Code** (e.g., "ABC")
-2. Enter your **Site Server** FQDN (e.g., "sccm01.contoso.com")
+The UI includes preset placeholder values for quick testing. You can change these to match your environment:
+
+1. **Site Code**: Pre-filled with "ABC" - change to your actual site code
+2. **Site Server**: Pre-filled with "sccm01.contoso.com" - change to your actual SCCM server FQDN
 3. Click **Connect**
 4. Wait for connection confirmation
 
+**Tip**: After changing these values once, they'll remain in the UI for your session, so you don't need to re-enter them each time you use the tool.
+
 ### Step 3: Configure Scan Settings
 
-1. Enter the **Collection ID** you want to scan (e.g., "ABC00123")
-2. Review/modify the **Log File Path** (default: `C:\Windows\ccm\logs\TaskSequenceDeferral.log`)
+The scan settings also include preset values:
+
+1. **Collection ID**: Pre-filled with "ABC00123" - change to the collection you want to scan
+2. **Log File Path**: Pre-filled with `C:\Windows\ccm\logs\TaskSequenceDeferral.log` - can be changed if your logs are in a different location
    - This is the local path on each client
    - The tool will automatically convert to UNC path (e.g., `\\computer\C$\Windows\ccm\logs\TaskSequenceDeferral.log`)
 
