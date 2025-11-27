@@ -15,7 +15,29 @@ A modern, user-friendly PowerShell tool for providing deferral options when depl
 - **Hidden console** support for SCCM deployments via VBScript wrapper
 - **Task Sequence detection** - automatically exits if Task Sequence already running
 
+## Diagnostic Tool
+
+A separate **SCCM Log Reader Tool** is included for administrators to monitor deferral status across collections:
+
+- **Connect to SCCM** and scan collection members
+- **Read deferral logs** remotely via UNC paths
+- **Traffic light indicators** showing deferral counts and TS trigger status
+- **Online/offline detection** with visual indicators
+- **Export to CSV** for reporting
+- **Modern UI** (1500x900) with light blue accent
+
+Perfect for:
+- Monitoring deployment progress
+- Identifying offline computers
+- Tracking deferral patterns
+- Troubleshooting failed TS triggers
+- Generating compliance reports
+
+**See [SCCM_LOG_READER_README.md](SCCM_LOG_READER_README.md) for complete documentation.**
+
 ## Files Included
+
+### Client-Side Deferral Tool
 
 | File | Description |
 |------|-------------|
@@ -25,6 +47,15 @@ A modern, user-friendly PowerShell tool for providing deferral options when depl
 | `Detect-Windows11.ps1` | Detection method script for Windows 11 |
 | `README.md` | This file - deployment instructions |
 | `banner.png` | Your company banner image (900x125 pixels) - **YOU NEED TO ADD THIS** |
+
+### Diagnostic Tool (SCCM Admin)
+
+| File | Description |
+|------|-------------|
+| `SCCMLogReaderTool.ps1` | Diagnostic tool for reading deferral logs from collection members |
+| `SCCM_LOG_READER_README.md` | Documentation for the diagnostic tool |
+
+**See [SCCM_LOG_READER_README.md](SCCM_LOG_READER_README.md) for details on using the diagnostic tool.**
 
 ## Prerequisites
 

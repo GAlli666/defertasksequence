@@ -38,7 +38,7 @@
         <RegistryValueName>DeferralCount</RegistryValueName>
 
         <!-- Logging (optional - leave empty to disable file logging) -->
-        <LogPath>C:\Windows\Temp\TaskSequenceDeferral.log</LogPath>
+        <LogPath>C:\Windows\ccm\logs\TaskSequenceDeferral.log</LogPath>
 
         <!-- User Interface Configuration -->
         <UI>
