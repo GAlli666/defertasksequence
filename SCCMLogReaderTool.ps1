@@ -251,8 +251,8 @@ function Connect-ToSCCM {
             New-PSDrive -Name $SiteCode -PSProvider CMSite -Root $SiteServer -ErrorAction Stop | Out-Null
         }
 
-        # Change to site drive
-        Set-Location $siteCodePath -ErrorAction Stop
+        # Store site code in script variable for later use
+        $script:sccmSiteCode = $SiteCode
 
         Write-Host "Successfully connected to SCCM site: $SiteCode" -ForegroundColor Green
         return $true
@@ -271,7 +271,18 @@ function Get-CollectionMembers {
     try {
         Write-Host "Retrieving members of collection: $CollectionID" -ForegroundColor Cyan
 
+        # Store current location and switch to SCCM drive
+        $currentLocation = Get-Location
+        $siteCodePath = "$($script:sccmSiteCode):"
+
+        Set-Location $siteCodePath -ErrorAction Stop
+        Write-Host "Switched to SCCM drive: $siteCodePath" -ForegroundColor Cyan
+
+        # Get collection members
         $members = Get-CMCollectionMember -CollectionId $CollectionID -ErrorAction Stop
+
+        # Restore original location
+        Set-Location $currentLocation
 
         if ($members) {
             Write-Host "Found $($members.Count) members in collection" -ForegroundColor Green
@@ -283,6 +294,14 @@ function Get-CollectionMembers {
     }
     catch {
         Write-Host "Failed to retrieve collection members: $_" -ForegroundColor Red
+        # Try to restore location even on error
+        try {
+            if ($currentLocation) {
+                Set-Location $currentLocation
+            }
+        } catch {
+            # Silently ignore restore errors
+        }
         return $null
     }
 }
