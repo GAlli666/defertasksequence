@@ -3,12 +3,29 @@
     Setup script for SCCM Deferral Monitor Scheduled Task
 
 .DESCRIPTION
-    Creates a Windows Scheduled Task to run the SCCMDeferralMonitor.ps1 script
-    every hour. Requires administrative privileges.
+    Creates a Windows Scheduled Task to run the SCCMDeferralMonitor.ps1 script.
+    You can configure the schedule yourself in Task Scheduler after creation.
+    Requires administrative privileges.
 
 .NOTES
     Date: 2025-11-28
     Requires: Administrator rights
+
+.PARAMETER ScriptPath
+    Path to SCCMDeferralMonitor.ps1 (defaults to same directory as this script)
+
+.PARAMETER ConfigPath
+    Path to SCCMDeferralMonitorConfig.xml (defaults to same directory as this script)
+
+.PARAMETER TaskName
+    Name of the scheduled task to create
+
+.PARAMETER TriggerType
+    Type of trigger: "Hourly", "Daily", "Weekly", "Manual" (default: "Manual")
+    Manual = task is created but you set the schedule yourself in Task Scheduler
+
+.PARAMETER IntervalHours
+    If TriggerType is Hourly: run every N hours (default: 1)
 #>
 
 [CmdletBinding()]
@@ -20,10 +37,14 @@ param(
     [string]$ConfigPath = "",
 
     [Parameter(Mandatory=$false)]
-    [int]$IntervalMinutes = 60,
+    [string]$TaskName = "SCCM Deferral Monitor",
 
     [Parameter(Mandatory=$false)]
-    [string]$TaskName = "SCCM Deferral Monitor"
+    [ValidateSet("Hourly", "Daily", "Weekly", "Manual")]
+    [string]$TriggerType = "Manual",
+
+    [Parameter(Mandatory=$false)]
+    [int]$IntervalHours = 1
 )
 
 # Check if running as administrator
@@ -62,7 +83,7 @@ try {
     Write-Host "=============================================" -ForegroundColor Cyan
     Write-Host "Script Path: $ScriptPath" -ForegroundColor Gray
     Write-Host "Config Path: $ConfigPath" -ForegroundColor Gray
-    Write-Host "Interval: Every $IntervalMinutes minutes" -ForegroundColor Gray
+    Write-Host "Trigger Type: $TriggerType" -ForegroundColor Gray
     Write-Host "Task Name: $TaskName`n" -ForegroundColor Gray
 
     # Check if task already exists
@@ -76,8 +97,33 @@ try {
     # Create task action
     $action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -ConfigFile `"$ConfigPath`""
 
-    # Create task trigger (repeating every X minutes)
-    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) -RepetitionDuration ([TimeSpan]::MaxValue)
+    # Create task trigger based on type
+    $trigger = $null
+    $description = ""
+
+    switch ($TriggerType) {
+        "Hourly" {
+            $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours $IntervalHours) -RepetitionDuration ([TimeSpan]::MaxValue)
+            $description = "Collects SCCM deferral data and generates web reports every $IntervalHours hour(s)"
+            Write-Host "Schedule: Every $IntervalHours hour(s)" -ForegroundColor Gray
+        }
+        "Daily" {
+            $trigger = New-ScheduledTaskTrigger -Daily -At "2:00AM"
+            $description = "Collects SCCM deferral data and generates web reports daily at 2:00 AM"
+            Write-Host "Schedule: Daily at 2:00 AM" -ForegroundColor Gray
+        }
+        "Weekly" {
+            $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At "2:00AM"
+            $description = "Collects SCCM deferral data and generates web reports weekly on Mondays at 2:00 AM"
+            Write-Host "Schedule: Weekly on Mondays at 2:00 AM" -ForegroundColor Gray
+        }
+        "Manual" {
+            # Create a dummy trigger that needs to be configured manually
+            $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(10)
+            $description = "Collects SCCM deferral data and generates web reports (schedule manually in Task Scheduler)"
+            Write-Host "Schedule: Manual (configure in Task Scheduler)" -ForegroundColor Yellow
+        }
+    }
 
     # Create task settings
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable
@@ -86,20 +132,26 @@ try {
     $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
     # Register the task
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "Collects SCCM deferral data and generates web reports every $IntervalMinutes minutes"
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description $description
 
     Write-Host "`nScheduled task created successfully!" -ForegroundColor Green
-    Write-Host "Task will run every $IntervalMinutes minutes" -ForegroundColor Green
-    Write-Host "`nTo verify the task, run: Get-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Cyan
-    Write-Host "To run the task manually now, run: Start-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Cyan
-    Write-Host "To remove the task, run: Unregister-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Cyan
+
+    if ($TriggerType -eq "Manual") {
+        Write-Host "NOTE: Task created with Manual trigger. Configure the schedule in Task Scheduler." -ForegroundColor Yellow
+    }
+
+    Write-Host "`nUseful commands:" -ForegroundColor Cyan
+    Write-Host "  View task: Get-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Gray
+    Write-Host "  Run now: Start-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Gray
+    Write-Host "  Remove: Unregister-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Gray
+    Write-Host "  Edit schedule: Open Task Scheduler (taskschd.msc)" -ForegroundColor Gray
 
     # Ask if user wants to run it now
     $runNow = Read-Host "`nWould you like to run the task now? (Y/N)"
     if ($runNow -eq 'Y' -or $runNow -eq 'y') {
         Write-Host "Starting task..." -ForegroundColor Cyan
         Start-ScheduledTask -TaskName $TaskName
-        Write-Host "Task started!" -ForegroundColor Green
+        Write-Host "Task started! Monitor progress in Task Scheduler or check the output files." -ForegroundColor Green
     }
 
     exit 0

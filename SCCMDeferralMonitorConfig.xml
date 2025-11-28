@@ -13,16 +13,18 @@
         <Logs>
             <!-- Path to TaskSequenceDeferral.log on client machines -->
             <DeferralLogPath>C:\Windows\ccm\logs\TaskSequenceDeferral.log</DeferralLogPath>
-            <!-- Local directory to store copied logs -->
-            <LocalLogStoragePath>C:\SCCMDeferralMonitor\Logs</LocalLogStoragePath>
-            <!-- Number of days to keep TS logs -->
-            <TSLogRetentionDays>7</TSLogRetentionDays>
+
+            <!-- Task Sequence log collection settings -->
+            <!-- Mode: "DaysBack" = collect logs from last N days, "FromDate" = collect logs from specific date forward -->
+            <TSLogDateMode>DaysBack</TSLogDateMode>
+            <!-- If mode is DaysBack: number of days to look back from today -->
+            <TSLogLookbackDays>7</TSLogLookbackDays>
+            <!-- If mode is FromDate: start date in yyyy-MM-dd format (only used when mode is FromDate) -->
+            <TSLogStartDate>2025-01-01</TSLogStartDate>
         </Logs>
 
         <!-- Monitoring Settings -->
         <Monitoring>
-            <!-- How often to run the data collection (in minutes) -->
-            <RunIntervalMinutes>60</RunIntervalMinutes>
             <!-- Override TS status to "Success" if machine is running Windows 11 -->
             <Windows11OverrideSuccess>true</Windows11OverrideSuccess>
             <!-- Timeout for hostname verification WMI query (in seconds) -->
@@ -31,15 +33,13 @@
             <PingTimeoutMs>1000</PingTimeoutMs>
         </Monitoring>
 
-        <!-- Web Server Settings -->
+        <!-- Web Server Settings (IIS handles the actual web server) -->
         <WebServer>
-            <!-- Port for the web interface -->
-            <Port>8080</Port>
-            <!-- Root directory for the web server (will be created if doesn't exist) -->
+            <!-- Root directory where web files and data will be stored -->
             <WebRootPath>C:\inetpub\wwwroot\SCCMDeferralMonitor</WebRootPath>
             <!-- Directory to store JSON data files (relative to WebRootPath or absolute) -->
             <DataDirectory>Data</DataDirectory>
-            <!-- Directory to store log files (relative to WebRootPath or absolute) -->
+            <!-- Directory to store collected log files (relative to WebRootPath or absolute) -->
             <LogsDirectory>Logs</LogsDirectory>
         </WebServer>
 
