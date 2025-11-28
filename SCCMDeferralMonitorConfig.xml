@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Configuration>
+    <Settings>
+        <!-- SCCM Connection Settings -->
+        <SCCM>
+            <SiteCode>ABC</SiteCode>
+            <SiteServer>sccm01.contoso.com</SiteServer>
+            <CollectionID>ABC00123</CollectionID>
+            <TaskSequenceID>ABC00456</TaskSequenceID>
+        </SCCM>
+
+        <!-- Log Settings -->
+        <Logs>
+            <!-- Path to TaskSequenceDeferral.log on client machines -->
+            <DeferralLogPath>C:\Windows\ccm\logs\TaskSequenceDeferral.log</DeferralLogPath>
+            <!-- Local directory to store copied logs -->
+            <LocalLogStoragePath>C:\SCCMDeferralMonitor\Logs</LocalLogStoragePath>
+            <!-- Number of days to keep TS logs -->
+            <TSLogRetentionDays>7</TSLogRetentionDays>
+        </Logs>
+
+        <!-- Monitoring Settings -->
+        <Monitoring>
+            <!-- How often to run the data collection (in minutes) -->
+            <RunIntervalMinutes>60</RunIntervalMinutes>
+            <!-- Override TS status to "Success" if machine is running Windows 11 -->
+            <Windows11OverrideSuccess>true</Windows11OverrideSuccess>
+        </Monitoring>
+
+        <!-- Web Server Settings -->
+        <WebServer>
+            <!-- Port for the web interface -->
+            <Port>8080</Port>
+            <!-- Directory to store HTML/JSON data -->
+            <DataDirectory>C:\SCCMDeferralMonitor\WebData</DataDirectory>
+        </WebServer>
+
+        <!-- Application Metadata -->
+        <Application>
+            <Name>SCCM Task Sequence Deferral Monitor</Name>
+            <Version>1.0</Version>
+            <Vendor>IT Department</Vendor>
+        </Application>
+    </Settings>
+</Configuration>

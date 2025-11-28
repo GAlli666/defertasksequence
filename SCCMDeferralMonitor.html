@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SCCM Task Sequence Deferral Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #5DADE2 0%, #3498DB 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .metadata {
+            background: #f8f9fa;
+            padding: 20px 30px;
+            border-bottom: 2px solid #e9ecef;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .metadata-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .metadata-label {
+            font-size: 11px;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 3px;
+        }
+
+        .metadata-value {
+            font-size: 16px;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .controls {
+            padding: 20px 30px;
+            background: white;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .search-box {
+            flex: 1;
+            min-width: 250px;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 10px 15px;
+            border: 2px solid #e9ecef;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .search-box input:focus {
+            outline: none;
+            border-color: #5DADE2;
+        }
+
+        .filter-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .filter-label {
+            font-size: 14px;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        select {
+            padding: 8px 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 6px;
+            font-size: 14px;
+            background: white;
+            cursor: pointer;
+            transition: border-color 0.3s;
+        }
+
+        select:focus {
+            outline: none;
+            border-color: #5DADE2;
+        }
+
+        .refresh-btn {
+            padding: 10px 20px;
+            background: #5DADE2;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .refresh-btn:hover {
+            background: #3498DB;
+        }
+
+        .table-container {
+            padding: 30px;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        thead {
+            background: #f8f9fa;
+        }
+
+        th {
+            padding: 15px 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #2c3e50;
+            border-bottom: 2px solid #dee2e6;
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+        }
+
+        th:hover {
+            background: #e9ecef;
+        }
+
+        th.sortable::after {
+            content: ' ⇅';
+            opacity: 0.3;
+            font-size: 12px;
+        }
+
+        th.sorted-asc::after {
+            content: ' ↑';
+            opacity: 1;
+            color: #5DADE2;
+        }
+
+        th.sorted-desc::after {
+            content: ' ↓';
+            opacity: 1;
+            color: #5DADE2;
+        }
+
+        tbody tr {
+            border-bottom: 1px solid #e9ecef;
+            transition: background 0.2s;
+        }
+
+        tbody tr:hover {
+            background: #f8f9fa;
+        }
+
+        tbody tr.offline {
+            background: #ffe6e6;
+        }
+
+        tbody tr.offline:hover {
+            background: #fdd;
+        }
+
+        td {
+            padding: 12px;
+            color: #495057;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-online {
+            background: #2ecc71;
+            box-shadow: 0 0 8px rgba(46, 204, 113, 0.6);
+        }
+
+        .status-offline {
+            background: #e74c3c;
+            box-shadow: 0 0 8px rgba(231, 76, 60, 0.6);
+        }
+
+        .ts-status {
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            display: inline-block;
+        }
+
+        .ts-success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .ts-failed {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .ts-inprogress {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .ts-notstarted {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+
+        .ts-unknown {
+            background: #d6d8db;
+            color: #383d41;
+        }
+
+        .trigger-status {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .trigger-yes {
+            color: #2ecc71;
+            font-weight: 600;
+        }
+
+        .trigger-no {
+            color: #e74c3c;
+            font-weight: 600;
+        }
+
+        .trigger-na {
+            color: #95a5a6;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 5px;
+        }
+
+        .btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .btn-primary {
+            background: #5DADE2;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #3498DB;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+
+        .btn:disabled {
+            background: #e9ecef;
+            color: #adb5bd;
+            cursor: not-allowed;
+        }
+
+        .legend {
+            padding: 20px 30px;
+            background: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+            display: flex;
+            gap: 30px;
+            flex-wrap: wrap;
+            font-size: 13px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .legend-label {
+            color: #6c757d;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 60px 30px;
+            color: #6c757d;
+            font-size: 18px;
+        }
+
+        .error {
+            text-align: center;
+            padding: 60px 30px;
+            color: #e74c3c;
+            font-size: 18px;
+        }
+
+        .no-data {
+            text-align: center;
+            padding: 60px 30px;
+            color: #6c757d;
+            font-size: 16px;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 24px;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .search-box {
+                min-width: 100%;
+            }
+
+            .table-container {
+                padding: 15px;
+            }
+
+            table {
+                font-size: 11px;
+            }
+
+            th, td {
+                padding: 8px 6px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>SCCM Task Sequence Deferral Monitor</h1>
+            <p>Real-time monitoring of Task Sequence deferrals and deployment status</p>
+        </div>
+
+        <div class="metadata" id="metadata">
+            <div class="metadata-item">
+                <span class="metadata-label">Last Updated</span>
+                <span class="metadata-value" id="lastUpdate">-</span>
+            </div>
+            <div class="metadata-item">
+                <span class="metadata-label">Total Devices</span>
+                <span class="metadata-value" id="totalDevices">-</span>
+            </div>
+            <div class="metadata-item">
+                <span class="metadata-label">Online</span>
+                <span class="metadata-value" style="color: #2ecc71;" id="onlineDevices">-</span>
+            </div>
+            <div class="metadata-item">
+                <span class="metadata-label">Offline</span>
+                <span class="metadata-value" style="color: #e74c3c;" id="offlineDevices">-</span>
+            </div>
+            <div class="metadata-item">
+                <span class="metadata-label">Collection ID</span>
+                <span class="metadata-value" id="collectionID">-</span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="Search by device name or user...">
+            </div>
+            <div class="filter-group">
+                <span class="filter-label">Filter:</span>
+                <select id="filterStatus">
+                    <option value="all">All Status</option>
+                    <option value="online">Online Only</option>
+                    <option value="offline">Offline Only</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <select id="filterTS">
+                    <option value="all">All TS Status</option>
+                    <option value="success">Success</option>
+                    <option value="failed">Failed</option>
+                    <option value="inprogress">In Progress</option>
+                    <option value="notstarted">Not Started</option>
+                </select>
+            </div>
+            <button class="refresh-btn" id="refreshBtn">Refresh Data</button>
+        </div>
+
+        <div class="table-container">
+            <div id="loadingMessage" class="loading">Loading data...</div>
+            <div id="errorMessage" class="error" style="display: none;"></div>
+            <div id="noDataMessage" class="no-data" style="display: none;">No devices match the current filters.</div>
+
+            <table id="dataTable" style="display: none;">
+                <thead>
+                    <tr>
+                        <th class="sortable" data-column="DeviceName">Device Name</th>
+                        <th class="sortable" data-column="PrimaryUser">Primary User</th>
+                        <th class="sortable" data-column="OnlineStatus">Status</th>
+                        <th class="sortable" data-column="TSStatus">TS Status</th>
+                        <th class="sortable" data-column="DeferralCount">Deferral Count</th>
+                        <th class="sortable" data-column="TSTriggerAttempted">TS Trigger Attempted</th>
+                        <th class="sortable" data-column="TSTriggerSuccess">TS Trigger Success</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                </tbody>
+            </table>
+        </div>
+
+        <div class="legend">
+            <div class="legend-item">
+                <span class="status-indicator status-online"></span>
+                <span class="legend-label">Online</span>
+            </div>
+            <div class="legend-item">
+                <span class="status-indicator status-offline"></span>
+                <span class="legend-label">Offline</span>
+            </div>
+            <div class="legend-item">
+                <span class="ts-status ts-success">Success</span>
+            </div>
+            <div class="legend-item">
+                <span class="ts-status ts-failed">Failed</span>
+            </div>
+            <div class="legend-item">
+                <span class="ts-status ts-inprogress">In Progress</span>
+            </div>
+            <div class="legend-item">
+                <span class="ts-status ts-notstarted">Not Started</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let allData = [];
+        let metadata = {};
+        let currentSort = { column: null, direction: 'asc' };
+
+        // Configuration - Update this path to match your web server setup
+        const DATA_URL = 'devicedata.json';
+        const METADATA_URL = 'metadata.json';
+        const LOG_BASE_PATH = '../Logs/'; // Adjust based on your web server configuration
+
+        // Load data on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            loadData();
+
+            // Event listeners
+            document.getElementById('refreshBtn').addEventListener('click', loadData);
+            document.getElementById('searchInput').addEventListener('input', filterAndRenderTable);
+            document.getElementById('filterStatus').addEventListener('change', filterAndRenderTable);
+            document.getElementById('filterTS').addEventListener('change', filterAndRenderTable);
+
+            // Sorting event listeners
+            document.querySelectorAll('th.sortable').forEach(th => {
+                th.addEventListener('click', () => {
+                    const column = th.getAttribute('data-column');
+                    sortTable(column);
+                });
+            });
+        });
+
+        // Load data from JSON files
+        async function loadData() {
+            try {
+                document.getElementById('loadingMessage').style.display = 'block';
+                document.getElementById('errorMessage').style.display = 'none';
+                document.getElementById('dataTable').style.display = 'none';
+                document.getElementById('noDataMessage').style.display = 'none';
+
+                // Fetch metadata
+                const metadataResponse = await fetch(METADATA_URL + '?t=' + Date.now());
+                if (!metadataResponse.ok) {
+                    throw new Error('Failed to load metadata');
+                }
+                metadata = await metadataResponse.json();
+
+                // Fetch device data
+                const dataResponse = await fetch(DATA_URL + '?t=' + Date.now());
+                if (!dataResponse.ok) {
+                    throw new Error('Failed to load device data');
+                }
+                allData = await dataResponse.json();
+
+                // Update metadata display
+                document.getElementById('lastUpdate').textContent = metadata.LastUpdate;
+                document.getElementById('totalDevices').textContent = metadata.TotalDevices;
+                document.getElementById('onlineDevices').textContent = metadata.OnlineDevices;
+                document.getElementById('offlineDevices').textContent = metadata.OfflineDevices;
+                document.getElementById('collectionID').textContent = metadata.CollectionID;
+
+                document.getElementById('loadingMessage').style.display = 'none';
+                document.getElementById('dataTable').style.display = 'table';
+
+                // Render table
+                filterAndRenderTable();
+            }
+            catch (error) {
+                document.getElementById('loadingMessage').style.display = 'none';
+                document.getElementById('errorMessage').style.display = 'block';
+                document.getElementById('errorMessage').textContent = 'Error loading data: ' + error.message;
+                console.error('Error:', error);
+            }
+        }
+
+        // Filter and render table
+        function filterAndRenderTable() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            const statusFilter = document.getElementById('filterStatus').value;
+            const tsFilter = document.getElementById('filterTS').value;
+
+            let filteredData = allData.filter(device => {
+                // Search filter
+                const matchesSearch = device.DeviceName.toLowerCase().includes(searchTerm) ||
+                                    device.PrimaryUser.toLowerCase().includes(searchTerm);
+
+                // Status filter
+                let matchesStatus = true;
+                if (statusFilter === 'online') {
+                    matchesStatus = device.IsOnline;
+                } else if (statusFilter === 'offline') {
+                    matchesStatus = !device.IsOnline;
+                }
+
+                // TS filter
+                let matchesTS = true;
+                if (tsFilter !== 'all') {
+                    matchesTS = device.TSStatus.toLowerCase().replace(' ', '') === tsFilter;
+                }
+
+                return matchesSearch && matchesStatus && matchesTS;
+            });
+
+            if (filteredData.length === 0) {
+                document.getElementById('dataTable').style.display = 'none';
+                document.getElementById('noDataMessage').style.display = 'block';
+            } else {
+                document.getElementById('dataTable').style.display = 'table';
+                document.getElementById('noDataMessage').style.display = 'none';
+                renderTable(filteredData);
+            }
+        }
+
+        // Render table rows
+        function renderTable(data) {
+            const tbody = document.getElementById('tableBody');
+            tbody.innerHTML = '';
+
+            data.forEach(device => {
+                const row = document.createElement('tr');
+                if (!device.IsOnline) {
+                    row.classList.add('offline');
+                }
+
+                // Status indicator
+                const statusClass = device.IsOnline ? 'status-online' : 'status-offline';
+
+                // TS Status styling
+                const tsStatusClass = getTSStatusClass(device.TSStatus);
+
+                // Trigger status styling
+                const triggerAttemptedHtml = device.TSTriggerAttempted === 'N/A'
+                    ? '<span class="trigger-na">N/A</span>'
+                    : device.TSTriggerAttempted
+                        ? '<span class="trigger-yes">✓ Yes</span>'
+                        : '<span class="trigger-no">✗ No</span>';
+
+                const triggerSuccessHtml = device.TSTriggerSuccess === 'N/A'
+                    ? '<span class="trigger-na">N/A</span>'
+                    : device.TSTriggerSuccess
+                        ? '<span class="trigger-yes">✓ Yes</span>'
+                        : '<span class="trigger-no">✗ No</span>';
+
+                // Action buttons
+                const tsLogsDisabled = !device.LogAvailable || !device.IsOnline ? 'disabled' : '';
+                const deferralLogsDisabled = !device.LogAvailable || !device.IsOnline ? 'disabled' : '';
+
+                row.innerHTML = `
+                    <td>${device.DeviceName}</td>
+                    <td>${device.PrimaryUser}</td>
+                    <td>
+                        <span class="status-indicator ${statusClass}"></span>
+                        ${device.OnlineStatus}
+                    </td>
+                    <td><span class="ts-status ${tsStatusClass}">${device.TSStatus}</span></td>
+                    <td>${device.DeferralCount === 'N/A' ? '<span class="trigger-na">N/A</span>' : device.DeferralCount}</td>
+                    <td>${triggerAttemptedHtml}</td>
+                    <td>${triggerSuccessHtml}</td>
+                    <td>
+                        <div class="btn-group">
+                            <button class="btn btn-primary" onclick="viewTSLogs('${device.TSLogsPath}')" ${tsLogsDisabled}>TS Logs</button>
+                            <button class="btn btn-secondary" onclick="viewDeferralLog('${device.DeferralLogPath}')" ${deferralLogsDisabled}>Deferral Log</button>
+                        </div>
+                    </td>
+                `;
+
+                tbody.appendChild(row);
+            });
+        }
+
+        // Get TS status CSS class
+        function getTSStatusClass(status) {
+            const statusLower = status.toLowerCase().replace(' ', '');
+            switch (statusLower) {
+                case 'success': return 'ts-success';
+                case 'failed': return 'ts-failed';
+                case 'inprogress': return 'ts-inprogress';
+                case 'notstarted': return 'ts-notstarted';
+                default: return 'ts-unknown';
+            }
+        }
+
+        // Sort table
+        function sortTable(column) {
+            // Update sort direction
+            if (currentSort.column === column) {
+                currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSort.column = column;
+                currentSort.direction = 'asc';
+            }
+
+            // Update header classes
+            document.querySelectorAll('th.sortable').forEach(th => {
+                th.classList.remove('sorted-asc', 'sorted-desc');
+                if (th.getAttribute('data-column') === column) {
+                    th.classList.add(currentSort.direction === 'asc' ? 'sorted-asc' : 'sorted-desc');
+                }
+            });
+
+            // Sort data
+            allData.sort((a, b) => {
+                let valA = a[column];
+                let valB = b[column];
+
+                // Handle N/A values
+                if (valA === 'N/A') valA = currentSort.direction === 'asc' ? 'ZZZZZ' : '';
+                if (valB === 'N/A') valB = currentSort.direction === 'asc' ? 'ZZZZZ' : '';
+
+                // Handle boolean values
+                if (typeof valA === 'boolean') valA = valA ? 1 : 0;
+                if (typeof valB === 'boolean') valB = valB ? 1 : 0;
+
+                // Compare
+                if (valA < valB) return currentSort.direction === 'asc' ? -1 : 1;
+                if (valA > valB) return currentSort.direction === 'asc' ? 1 : -1;
+                return 0;
+            });
+
+            filterAndRenderTable();
+        }
+
+        // View TS logs (opens directory listing or downloads zip)
+        function viewTSLogs(path) {
+            // In a real implementation, this would open a file browser or download a zip
+            // For now, just alert the path
+            alert('TS Logs location: ' + LOG_BASE_PATH + path + '\n\nConfigure your web server to serve this directory.');
+            // Uncomment below to open in new window (requires web server configuration)
+            // window.open(LOG_BASE_PATH + path, '_blank');
+        }
+
+        // View deferral log
+        function viewDeferralLog(path) {
+            // Open log file in new window
+            window.open(LOG_BASE_PATH + path, '_blank');
+        }
+    </script>
+</body>
+</html>
