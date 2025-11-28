@@ -289,6 +289,25 @@
             color: #95a5a6;
         }
 
+        .verification-warning {
+            color: #f39c12;
+            font-size: 16px;
+            cursor: help;
+            margin-left: 5px;
+        }
+
+        .verification-error {
+            color: #e74c3c;
+            font-size: 16px;
+            cursor: help;
+            margin-left: 5px;
+        }
+
+        .tooltip {
+            position: relative;
+            display: inline-block;
+        }
+
         .btn-group {
             display: flex;
             gap: 5px;
@@ -640,12 +659,25 @@
                         ? '<span class="trigger-yes">✓ Yes</span>'
                         : '<span class="trigger-no">✗ No</span>';
 
-                // Action buttons
-                const tsLogsDisabled = !device.LogAvailable || !device.IsOnline ? 'disabled' : '';
-                const deferralLogsDisabled = !device.LogAvailable || !device.IsOnline ? 'disabled' : '';
+                // Hostname verification indicator
+                let verificationIndicator = '';
+                if (device.IsOnline && !device.HostnameVerified) {
+                    const errorMsg = device.VerificationError || 'Hostname verification failed';
+                    if (device.ActualHostname !== 'Unknown' && device.ActualHostname !== device.DeviceName) {
+                        // DNS mismatch - critical error
+                        verificationIndicator = `<span class="verification-error" title="DNS MISMATCH! Expected: ${device.DeviceName}, Found: ${device.ActualHostname}">⚠</span>`;
+                    } else {
+                        // Verification failed but no explicit mismatch
+                        verificationIndicator = `<span class="verification-warning" title="${errorMsg}">⚠</span>`;
+                    }
+                }
+
+                // Action buttons - disable if verification failed
+                const tsLogsDisabled = !device.LogAvailable || !device.IsOnline || !device.HostnameVerified ? 'disabled' : '';
+                const deferralLogsDisabled = !device.LogAvailable || !device.IsOnline || !device.HostnameVerified ? 'disabled' : '';
 
                 row.innerHTML = `
-                    <td>${device.DeviceName}</td>
+                    <td>${device.DeviceName}${verificationIndicator}</td>
                     <td>${device.PrimaryUser}</td>
                     <td>
                         <span class="status-indicator ${statusClass}"></span>

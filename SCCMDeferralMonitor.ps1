@@ -255,6 +255,72 @@ function Test-ComputerOnline {
     }
 }
 
+function Confirm-ComputerIdentity {
+    <#
+    .SYNOPSIS
+        Verifies that the computer we're connecting to is the one we expect
+    .DESCRIPTION
+        Uses WMI to query the actual hostname from the remote computer and compares it
+        to the expected name. Critical for VPN scenarios where DNS may be outdated.
+    .OUTPUTS
+        Hashtable with IsValid (bool) and ActualName (string)
+    #>
+    param(
+        [string]$ExpectedName,
+        [int]$TimeoutSeconds = 3
+    )
+
+    $result = @{
+        IsValid = $false
+        ActualName = "Unknown"
+        ErrorMessage = ""
+    }
+
+    try {
+        # Set WMI query timeout
+        $connectionOptions = New-Object System.Management.ConnectionOptions
+        $connectionOptions.Timeout = New-TimeSpan -Seconds $TimeoutSeconds
+
+        $scope = New-Object System.Management.ManagementScope("\\$ExpectedName\root\cimv2", $connectionOptions)
+        $scope.Connect()
+
+        $query = New-Object System.Management.ObjectQuery("SELECT Name FROM Win32_ComputerSystem")
+        $searcher = New-Object System.Management.ManagementObjectSearcher($scope, $query)
+
+        # Execute with timeout
+        $computers = $searcher.Get()
+
+        foreach ($computer in $computers) {
+            $result.ActualName = $computer["Name"]
+
+            # Compare names (case-insensitive)
+            if ($result.ActualName -eq $ExpectedName) {
+                $result.IsValid = $true
+            }
+            else {
+                $result.ErrorMessage = "Hostname mismatch: Expected '$ExpectedName', got '$($result.ActualName)'"
+            }
+
+            break
+        }
+
+        if ([string]::IsNullOrEmpty($result.ActualName)) {
+            $result.ErrorMessage = "Could not retrieve hostname via WMI"
+        }
+    }
+    catch [System.Management.ManagementException] {
+        $result.ErrorMessage = "WMI error: $($_.Exception.Message)"
+    }
+    catch [System.UnauthorizedAccessException] {
+        $result.ErrorMessage = "Access denied"
+    }
+    catch {
+        $result.ErrorMessage = "Verification failed: $($_.Exception.Message)"
+    }
+
+    return $result
+}
+
 function Get-DeferralLogData {
     param(
         [string]$LogPath,
@@ -527,6 +593,8 @@ try {
     $dataDirectoryConfig = $config.Configuration.Settings.WebServer.DataDirectory
     $logsDirectoryConfig = $config.Configuration.Settings.WebServer.LogsDirectory
     $win11Override = [System.Convert]::ToBoolean($config.Configuration.Settings.Monitoring.Windows11OverrideSuccess)
+    $hostnameVerificationTimeout = [int]$config.Configuration.Settings.Monitoring.HostnameVerificationTimeoutSeconds
+    $pingTimeout = [int]$config.Configuration.Settings.Monitoring.PingTimeoutMs
 
     # Store site server in script scope
     $script:sccmSiteServer = $siteServer
@@ -622,8 +690,36 @@ try {
         Write-Host "[$count/$($members.Count)] Processing: $computerName" -ForegroundColor Yellow
 
         # Check if online
-        $isOnline = Test-ComputerOnline -ComputerName $computerName
+        $isOnline = Test-ComputerOnline -ComputerName $computerName -TimeoutMs $pingTimeout
         Write-Host "  Online: $isOnline" -ForegroundColor $(if ($isOnline) { "Green" } else { "Red" })
+
+        # Initialize variables
+        $hostnameVerified = $false
+        $actualHostname = $computerName
+        $verificationError = ""
+
+        # Verify hostname if online (critical for VPN scenarios)
+        if ($isOnline) {
+            Write-Host "  Verifying hostname..." -ForegroundColor Cyan
+            $verification = Confirm-ComputerIdentity -ExpectedName $computerName -TimeoutSeconds $hostnameVerificationTimeout
+
+            $hostnameVerified = $verification.IsValid
+            $actualHostname = $verification.ActualName
+
+            if ($hostnameVerified) {
+                Write-Host "  Hostname verified: $actualHostname" -ForegroundColor Green
+            }
+            else {
+                Write-Host "  Hostname verification failed: $($verification.ErrorMessage)" -ForegroundColor Red
+                $verificationError = $verification.ErrorMessage
+
+                # If hostname doesn't match, treat as offline for log collection
+                if ($actualHostname -ne "Unknown" -and $actualHostname -ne $computerName) {
+                    Write-Host "  WARNING: DNS mismatch detected! Expected '$computerName' but found '$actualHostname'" -ForegroundColor Yellow
+                    Write-Host "  Skipping log collection to prevent pulling from wrong machine" -ForegroundColor Yellow
+                }
+            }
+        }
 
         # Get primary user
         $primaryUser = Get-DevicePrimaryUser -ComputerName $computerName
@@ -654,7 +750,8 @@ try {
             LogAvailable = $false
         }
 
-        if ($isOnline) {
+        # Only collect logs if online AND hostname verified
+        if ($isOnline -and $hostnameVerified) {
             $deferralData = Get-DeferralLogData -LogPath $deferralLogPath -ComputerName $computerName
 
             if ($deferralData.LogAvailable) {
@@ -672,6 +769,16 @@ try {
                 Write-Host "  Deferral log not available: $($deferralData.ErrorMessage)" -ForegroundColor Yellow
             }
         }
+        elseif ($isOnline -and -not $hostnameVerified) {
+            Write-Host "  Skipping log collection: Hostname not verified (DNS issue?)" -ForegroundColor Yellow
+            $deferralData = @{
+                DeferralCount = "N/A"
+                TSTriggerAttempted = "N/A"
+                TSTriggerSuccess = "N/A"
+                LogAvailable = $false
+                ErrorMessage = "Hostname verification failed: $verificationError"
+            }
+        }
 
         # Build device data object
         $deviceData = [PSCustomObject]@{
@@ -679,6 +786,9 @@ try {
             PrimaryUser = $primaryUser
             IsOnline = $isOnline
             OnlineStatus = if ($isOnline) { "Online" } else { "Offline" }
+            HostnameVerified = $hostnameVerified
+            ActualHostname = $actualHostname
+            VerificationError = $verificationError
             TSStatus = $tsStatus
             OSVersion = $osVersion
             IsWindows11 = $isWindows11

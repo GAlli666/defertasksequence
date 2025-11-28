@@ -25,6 +25,10 @@
             <RunIntervalMinutes>60</RunIntervalMinutes>
             <!-- Override TS status to "Success" if machine is running Windows 11 -->
             <Windows11OverrideSuccess>true</Windows11OverrideSuccess>
+            <!-- Timeout for hostname verification WMI query (in seconds) -->
+            <HostnameVerificationTimeoutSeconds>3</HostnameVerificationTimeoutSeconds>
+            <!-- Timeout for ping checks (in milliseconds) -->
+            <PingTimeoutMs>1000</PingTimeoutMs>
         </Monitoring>
 
         <!-- Web Server Settings -->
