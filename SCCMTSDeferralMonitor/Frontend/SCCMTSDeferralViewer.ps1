@@ -9,26 +9,59 @@
 .NOTES
     Date: 2025-11-28
     Requires: PowerShell 5.1 with WPF support
-
-    Features:
-    - Real-time data refresh from JSON files
-    - Sortable columns
-    - Filter by online/offline status
-    - Filter by TS status
-    - Search by device name or user
-    - View TS execution logs
-    - View deferral logs
 #>
 
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
+Add-Type -AssemblyName System.Windows.Forms
 
 #region Configuration
 
-# Default data path (can be changed in UI)
-$script:DataPath = "C:\SCCMDeferralMonitor\Data"
-$script:LogsPath = "C:\SCCMDeferralMonitor\Logs"
+# Get script directory
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# Load configuration from XML
+function Load-ViewerConfig {
+    $configPath = Join-Path $scriptDir "ViewerConfig.xml"
+
+    if (Test-Path $configPath) {
+        try {
+            [xml]$config = Get-Content $configPath
+            $script:DataPath = $config.ViewerConfiguration.Paths.DataPath
+            $script:LogsPath = $config.ViewerConfiguration.Paths.LogsPath
+            Write-Host "Configuration loaded from: $configPath"
+        }
+        catch {
+            Write-Host "Error loading config, using defaults: $_"
+            $script:DataPath = "C:\SCCMDeferralMonitor\Data"
+            $script:LogsPath = "C:\SCCMDeferralMonitor\Logs"
+        }
+    }
+    else {
+        $script:DataPath = "C:\SCCMDeferralMonitor\Data"
+        $script:LogsPath = "C:\SCCMDeferralMonitor\Logs"
+    }
+}
+
+function Save-ViewerConfig {
+    $configPath = Join-Path $scriptDir "ViewerConfig.xml"
+
+    $xml = @"
+<?xml version="1.0" encoding="utf-8"?>
+<ViewerConfiguration>
+    <Paths>
+        <DataPath>$($script:DataPath)</DataPath>
+        <LogsPath>$($script:LogsPath)</LogsPath>
+    </Paths>
+</ViewerConfiguration>
+"@
+
+    $xml | Out-File -FilePath $configPath -Encoding utf8 -Force
+}
+
+Load-ViewerConfig
+
 $script:deviceData = @()
 $script:metadata = @{}
 
@@ -36,7 +69,7 @@ $script:metadata = @{}
 
 #region XAML Definition
 
-$xaml = @"
+$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="SCCM TS Deferral Monitor"
@@ -45,19 +78,15 @@ $xaml = @"
         Background="#FF2E3440">
 
     <Window.Resources>
-        <!-- Modern Color Scheme -->
         <SolidColorBrush x:Key="PrimaryBrush" Color="#FF5E81AC"/>
-        <SolidColorBrush x:Key="SecondaryBrush" Color="#FF81A1C1"/>
         <SolidColorBrush x:Key="AccentBrush" Color="#FF88C0D0"/>
         <SolidColorBrush x:Key="SuccessBrush" Color="#FFA3BE8C"/>
-        <SolidColorBrush x:Key="WarningBrush" Color="#FFEBCB8B"/>
         <SolidColorBrush x:Key="ErrorBrush" Color="#FFBF616A"/>
         <SolidColorBrush x:Key="BackgroundBrush" Color="#FF2E3440"/>
         <SolidColorBrush x:Key="SurfaceBrush" Color="#FF3B4252"/>
         <SolidColorBrush x:Key="TextBrush" Color="#FFECEFF4"/>
         <SolidColorBrush x:Key="TextSecondaryBrush" Color="#FFD8DEE9"/>
 
-        <!-- Button Style -->
         <Style x:Key="ModernButton" TargetType="Button">
             <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
             <Setter Property="Foreground" Value="White"/>
@@ -68,19 +97,24 @@ $xaml = @"
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}"
-                                CornerRadius="4"
-                                Padding="{TemplateBinding Padding}">
+                        <Border Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="{StaticResource SecondaryBrush}"/>
-                </Trigger>
-            </Style.Triggers>
+        </Style>
+
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#FF434C5E"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+        </Style>
+
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="#FF434C5E"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="Padding" Value="8,4"/>
         </Style>
     </Window.Resources>
 
@@ -93,7 +127,6 @@ $xaml = @"
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Header -->
         <Border Grid.Row="0" Background="{StaticResource PrimaryBrush}" Padding="20,15">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -102,9 +135,7 @@ $xaml = @"
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0">
-                    <TextBlock Text="SCCM TS Deferral Monitor"
-                               FontSize="22" FontWeight="Bold"
-                               Foreground="White"/>
+                    <TextBlock Text="SCCM TS Deferral Monitor" FontSize="22" FontWeight="Bold" Foreground="White"/>
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
@@ -120,7 +151,6 @@ $xaml = @"
             </Grid>
         </Border>
 
-        <!-- Metadata Bar -->
         <Border Grid.Row="1" Background="{StaticResource SurfaceBrush}" Padding="20,10" BorderBrush="#FF4C566A" BorderThickness="0,0,0,1">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -159,7 +189,6 @@ $xaml = @"
             </Grid>
         </Border>
 
-        <!-- Filters -->
         <Border Grid.Row="2" Background="{StaticResource SurfaceBrush}" Padding="20,10" BorderBrush="#FF4C566A" BorderThickness="0,0,0,1">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -168,57 +197,15 @@ $xaml = @"
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <TextBox x:Name="txtSearch" Grid.Column="0"
-                         Height="32"
-                         Background="#FF434C5E"
-                         Foreground="{StaticResource TextBrush}"
-                         BorderThickness="0"
-                         Padding="10,0"
-                         FontSize="13"
-                         VerticalContentAlignment="Center">
-                    <TextBox.Resources>
-                        <Style TargetType="Border">
-                            <Setter Property="CornerRadius" Value="4"/>
-                        </Style>
-                    </TextBox.Resources>
-                </TextBox>
-                <TextBlock IsHitTestVisible="False"
-                           Text="Search by device name or user..."
-                           VerticalAlignment="Center"
-                           HorizontalAlignment="Left"
-                           Margin="15,0,0,0"
-                           Foreground="{StaticResource TextSecondaryBrush}"
-                           Opacity="0.6"
-                           FontSize="13">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                            <Setter Property="Visibility" Value="Collapsed"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding Text, ElementName=txtSearch}" Value="">
-                                    <Setter Property="Visibility" Value="Visible"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
-                </TextBlock>
+                <TextBox x:Name="txtSearch" Grid.Column="0" Height="32" Background="#FF434C5E" Foreground="{StaticResource TextBrush}"
+                         BorderThickness="0" Padding="10,0" FontSize="13" VerticalContentAlignment="Center"/>
 
-                <ComboBox x:Name="cmbStatusFilter" Grid.Column="1"
-                          Width="150" Height="32" Margin="10,0,0,0"
-                          Background="#FF434C5E"
-                          Foreground="{StaticResource TextBrush}"
-                          BorderThickness="0"
-                          FontSize="13"/>
+                <ComboBox x:Name="cmbStatusFilter" Grid.Column="1" Width="150" Height="32" Margin="10,0,0,0" FontSize="13"/>
 
-                <ComboBox x:Name="cmbTSFilter" Grid.Column="2"
-                          Width="150" Height="32" Margin="10,0,0,0"
-                          Background="#FF434C5E"
-                          Foreground="{StaticResource TextBrush}"
-                          BorderThickness="0"
-                          FontSize="13"/>
+                <ComboBox x:Name="cmbTSFilter" Grid.Column="2" Width="150" Height="32" Margin="10,0,0,0" FontSize="13"/>
             </Grid>
         </Border>
 
-        <!-- DataGrid -->
         <DataGrid x:Name="dgDevices" Grid.Row="3"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
@@ -226,8 +213,6 @@ $xaml = @"
                   HeadersVisibility="Column"
                   SelectionMode="Single"
                   CanUserSortColumns="True"
-                  CanUserResizeColumns="True"
-                  CanUserReorderColumns="False"
                   Background="{StaticResource BackgroundBrush}"
                   Foreground="{StaticResource TextBrush}"
                   RowBackground="{StaticResource SurfaceBrush}"
@@ -244,7 +229,6 @@ $xaml = @"
                     <Setter Property="Padding" Value="12,10"/>
                     <Setter Property="BorderThickness" Value="0,0,0,2"/>
                     <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
-                    <Setter Property="HorizontalContentAlignment" Value="Left"/>
                 </Style>
             </DataGrid.ColumnHeaderStyle>
 
@@ -255,8 +239,7 @@ $xaml = @"
                     <Setter Property="Template">
                         <Setter.Value>
                             <ControlTemplate TargetType="DataGridCell">
-                                <Border Padding="{TemplateBinding Padding}"
-                                        Background="{TemplateBinding Background}">
+                                <Border Padding="{TemplateBinding Padding}" Background="{TemplateBinding Background}">
                                     <ContentPresenter VerticalAlignment="Center"/>
                                 </Border>
                             </ControlTemplate>
@@ -266,29 +249,55 @@ $xaml = @"
             </DataGrid.CellStyle>
 
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Device Name" Binding="{Binding DeviceName}" Width="200"/>
-                <DataGridTextColumn Header="Primary User" Binding="{Binding PrimaryUser}" Width="150"/>
-                <DataGridTextColumn Header="Online Status" Binding="{Binding OnlineStatus}" Width="100"/>
+                <DataGridTextColumn Header="Device Name" Binding="{Binding DeviceName}" Width="180"/>
+                <DataGridTextColumn Header="Primary User" Binding="{Binding PrimaryUser}" Width="140"/>
+
+                <DataGridTemplateColumn Header="Status" Width="100">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse Width="12" Height="12" Margin="0,0,8,0">
+                                    <Ellipse.Style>
+                                        <Style TargetType="Ellipse">
+                                            <Setter Property="Fill" Value="#FFBF616A"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsOnline}" Value="True">
+                                                    <Setter Property="Fill" Value="#FFA3BE8C"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Ellipse.Style>
+                                </Ellipse>
+                                <TextBlock Text="{Binding OnlineStatus}" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+
                 <DataGridTextColumn Header="TS Status" Binding="{Binding TSStatus}" Width="120"/>
-                <DataGridTextColumn Header="Deferral Count" Binding="{Binding DeferralCount}" Width="120"/>
-                <DataGridTextColumn Header="TS Trigger" Binding="{Binding TSTriggerAttempted}" Width="100"/>
-                <DataGridTextColumn Header="Trigger Success" Binding="{Binding TSTriggerSuccess}" Width="120"/>
+                <DataGridTextColumn Header="Deferral Count" Binding="{Binding DeferralCount}" Width="110"/>
+                <DataGridTextColumn Header="TS Trigger" Binding="{Binding TSTriggerAttempted}" Width="90"/>
+                <DataGridTextColumn Header="Trigger Success" Binding="{Binding TSTriggerSuccess}" Width="110"/>
+
                 <DataGridTemplateColumn Header="Actions" Width="200">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <StackPanel Orientation="Horizontal">
-                                <Button x:Name="btnViewTSStatus" Content="TS Status"
-                                        Style="{StaticResource ModernButton}"
-                                        Background="{StaticResource PrimaryBrush}"
-                                        Padding="10,5" Margin="0,0,5,0"
-                                        FontSize="11"
-                                        Tag="{Binding}"/>
-                                <Button x:Name="btnViewDeferralLog" Content="Deferral Log"
-                                        Style="{StaticResource ModernButton}"
-                                        Background="#FF6C757D"
-                                        Padding="10,5"
-                                        FontSize="11"
-                                        Tag="{Binding}"/>
+                                <Button Content="TS Status" Padding="10,5" Margin="0,0,5,0" FontSize="11" Click="ViewTSStatus_Click" Tag="{Binding}">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource ModernButton}">
+                                            <Setter Property="IsEnabled" Value="{Binding TSStatusMessagesAvailable}"/>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                                <Button Content="Deferral Log" Padding="10,5" FontSize="11" Click="ViewDeferralLog_Click" Tag="{Binding}">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource ModernButton}">
+                                            <Setter Property="Background" Value="#FF6C757D"/>
+                                            <Setter Property="IsEnabled" Value="{Binding LogAvailable}"/>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
                             </StackPanel>
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
@@ -296,16 +305,12 @@ $xaml = @"
             </DataGrid.Columns>
         </DataGrid>
 
-        <!-- Status Bar -->
         <Border Grid.Row="4" Background="{StaticResource SurfaceBrush}" Padding="20,8" BorderBrush="#FF4C566A" BorderThickness="0,1,0,0">
-            <TextBlock x:Name="txtStatusBar"
-                       Text="Ready"
-                       FontSize="12"
-                       Foreground="{StaticResource TextSecondaryBrush}"/>
+            <TextBlock x:Name="txtStatusBar" Text="Ready" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"/>
         </Border>
     </Grid>
 </Window>
-"@
+'@
 
 #endregion
 
@@ -333,13 +338,12 @@ function Load-Data {
         if (Test-Path $deviceDataPath) {
             $script:deviceData = Get-Content $deviceDataPath | ConvertFrom-Json
 
-            # Apply filters and update grid
             Apply-Filters
 
-            $script:txtStatusBar.Text = "Data loaded successfully - $($script:deviceData.Count) devices"
+            $script:txtStatusBar.Text = "Data loaded - $($script:deviceData.Count) devices"
         }
         else {
-            $script:txtStatusBar.Text = "Error: devicedata.json not found"
+            $script:txtStatusBar.Text = "Error: devicedata.json not found at $deviceDataPath"
             [System.Windows.MessageBox]::Show("Device data file not found: $deviceDataPath", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
         }
     }
@@ -362,7 +366,7 @@ function Apply-Filters {
 
     # Status filter
     $statusFilter = $script:cmbStatusFilter.SelectedItem
-    if ($statusFilter -and $statusFilter -ne "All Status") {
+    if ($statusFilter -and $statusFilter.ToString() -ne "All Status") {
         if ($statusFilter -eq "Online Only") {
             $filtered = $filtered | Where-Object { $_.IsOnline -eq $true }
         }
@@ -373,8 +377,8 @@ function Apply-Filters {
 
     # TS Status filter
     $tsFilter = $script:cmbTSFilter.SelectedItem
-    if ($tsFilter -and $tsFilter -ne "All TS Status") {
-        $filtered = $filtered | Where-Object { $_.TSStatus -eq $tsFilter }
+    if ($tsFilter -and $tsFilter.ToString() -ne "All TS Status") {
+        $filtered = $filtered | Where-Object { $_.TSStatus -eq $tsFilter.ToString() }
     }
 
     $script:dgDevices.ItemsSource = $filtered
@@ -382,51 +386,17 @@ function Apply-Filters {
 }
 
 function Show-SettingsDialog {
-    $settingsXaml = @"
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        Title="Settings" Height="250" Width="500"
-        WindowStartupLocation="CenterOwner"
-        Background="#FF2E3440"
-        ResizeMode="NoResize">
-    <Grid Margin="20">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
+    $browser = New-Object System.Windows.Forms.FolderBrowserDialog
+    $browser.Description = "Select Data Directory"
+    $browser.SelectedPath = $script:DataPath
 
-        <TextBlock Grid.Row="0" Text="Data Path" Foreground="#FFECEFF4" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,5"/>
-        <TextBox x:Name="txtDataPath" Grid.Row="1" Height="32" Background="#FF434C5E" Foreground="#FFECEFF4" BorderThickness="0" Padding="10,0" FontSize="13"/>
-
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="btnOK" Content="OK" Width="80" Height="32" Margin="0,0,10,0"/>
-            <Button x:Name="btnCancel" Content="Cancel" Width="80" Height="32"/>
-        </StackPanel>
-    </Grid>
-</Window>
-"@
-
-    $settingsReader = [System.Xml.XmlNodeReader]::new([xml]$settingsXaml)
-    $settingsWindow = [Windows.Markup.XamlReader]::Load($settingsReader)
-
-    $txtDataPath = $settingsWindow.FindName("txtDataPath")
-    $btnOK = $settingsWindow.FindName("btnOK")
-    $btnCancel = $settingsWindow.FindName("btnCancel")
-
-    $txtDataPath.Text = $script:DataPath
-
-    $btnOK.Add_Click({
-        $script:DataPath = $txtDataPath.Text
-        $settingsWindow.Close()
+    if ($browser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $script:DataPath = $browser.SelectedPath
+        $script:LogsPath = Join-Path (Split-Path $script:DataPath -Parent) "Logs"
+        Save-ViewerConfig
         Load-Data
-    })
-
-    $btnCancel.Add_Click({
-        $settingsWindow.Close()
-    })
-
-    $settingsWindow.ShowDialog()
+        [System.Windows.MessageBox]::Show("Configuration saved. Data Path: $($script:DataPath)`nLogs Path: $($script:LogsPath)", "Settings Updated", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+    }
 }
 
 function Open-LogFile {
@@ -436,7 +406,7 @@ function Open-LogFile {
         Start-Process notepad.exe -ArgumentList $FilePath
     }
     else {
-        [System.Windows.MessageBox]::Show("Log file not found: $FilePath", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+        [System.Windows.MessageBox]::Show("Log file not found: $FilePath", "File Not Found", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
     }
 }
 
@@ -445,8 +415,9 @@ function Open-LogFile {
 #region Main Window
 
 # Load XAML
-$reader = [System.Xml.XmlNodeReader]::new([xml]$xaml)
-$window = [Windows.Markup.XamlReader]::Load($reader)
+$reader = New-Object System.IO.StringReader($xaml)
+$xmlReader = [System.Xml.XmlReader]::Create($reader)
+$window = [Windows.Markup.XamlReader]::Load($xmlReader)
 
 # Get controls
 $script:txtCollectionName = $window.FindName("txtCollectionName")
@@ -477,43 +448,22 @@ $script:txtSearch.Add_TextChanged({ Apply-Filters })
 $script:cmbStatusFilter.Add_SelectionChanged({ Apply-Filters })
 $script:cmbTSFilter.Add_SelectionChanged({ Apply-Filters })
 
-# DataGrid button click handling
-$script:dgDevices.Add_LoadingRow({
+# Button click handlers - defined in XAML
+$window.Add_Click({
     param($sender, $e)
 
-    $row = $e.Row
-    $device = $row.Item
+    if ($e.OriginalSource -is [System.Windows.Controls.Button]) {
+        $button = $e.OriginalSource
+        $device = $button.Tag
 
-    # Find buttons in the row
-    $btnTSStatus = [System.Windows.LogicalTreeHelper]::FindLogicalNode($row, "btnViewTSStatus")
-    $btnDeferralLog = [System.Windows.LogicalTreeHelper]::FindLogicalNode($row, "btnViewDeferralLog")
-
-    if ($btnTSStatus) {
-        $btnTSStatus.Add_Click({
-            param($btnSender, $btnE)
-            $deviceData = $btnSender.Tag
-            $logPath = Join-Path $script:LogsPath $deviceData.TSStatusMessagesPath
-            if ($deviceData.TSStatusMessagesAvailable) {
-                Open-LogFile $logPath
-            }
-            else {
-                [System.Windows.MessageBox]::Show("No TS status messages available for this device.", "Information", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
-            }
-        })
-    }
-
-    if ($btnDeferralLog) {
-        $btnDeferralLog.Add_Click({
-            param($btnSender, $btnE)
-            $deviceData = $btnSender.Tag
-            $logPath = Join-Path $script:LogsPath $deviceData.DeferralLogPath
-            if ($deviceData.LogAvailable) {
-                Open-LogFile $logPath
-            }
-            else {
-                [System.Windows.MessageBox]::Show("No deferral log available for this device.", "Information", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
-            }
-        })
+        if ($button.Content -eq "TS Status" -and $device) {
+            $logPath = Join-Path $script:LogsPath $device.TSStatusMessagesPath
+            Open-LogFile $logPath
+        }
+        elseif ($button.Content -eq "Deferral Log" -and $device) {
+            $logPath = Join-Path $script:LogsPath $device.DeferralLogPath
+            Open-LogFile $logPath
+        }
     }
 })
 
