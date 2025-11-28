@@ -108,7 +108,56 @@ $xaml = @'
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#FF434C5E"/>
             <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="#FF4C566A"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton x:Name="ToggleButton"
+                                          Background="{TemplateBinding Background}"
+                                          BorderBrush="{TemplateBinding BorderBrush}"
+                                          BorderThickness="{TemplateBinding BorderThickness}"
+                                          IsChecked="{Binding Path=IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                          ClickMode="Press">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="20"/>
+                                    </Grid.ColumnDefinitions>
+                                    <ContentPresenter Grid.Column="0"
+                                                      Content="{TemplateBinding SelectionBoxItem}"
+                                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                      ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                                      HorizontalAlignment="Left"
+                                                      VerticalAlignment="Center"
+                                                      Margin="8,0,0,0"
+                                                      TextElement.Foreground="{StaticResource TextBrush}"/>
+                                    <Path Grid.Column="1"
+                                          Data="M 0 0 L 4 4 L 8 0 Z"
+                                          Fill="{StaticResource TextBrush}"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <Popup IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   Placement="Bottom"
+                                   AllowsTransparency="True"
+                                   PopupAnimation="Slide">
+                                <Border Background="#FF434C5E"
+                                        BorderBrush="#FF4C566A"
+                                        BorderThickness="1"
+                                        MaxHeight="200">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <ItemsPresenter/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style TargetType="ComboBoxItem">
