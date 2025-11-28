@@ -382,60 +382,71 @@ function Get-AllTaskSequenceDataFromSCCM {
 
         Write-Host "[SUCCESS] Processed $($resultHash.Count) devices with TS data from cmdlets" -ForegroundColor Green
 
-        # Now get detailed execution messages via WMI (SMS_StatusMessage) - collection-wide
-        Write-Host "`n[INFO] Querying SMS_StatusMessage WMI class for detailed step execution data..." -ForegroundColor Cyan
+        # Now get detailed execution messages via WMI (SMS_TaskSequenceExecutionStatus) - collection-wide
+        Write-Host "`n[INFO] Querying SMS_TaskSequenceExecutionStatus WMI class for detailed step execution data..." -ForegroundColor Cyan
+        Write-Host "[INFO] This class has: ExecutionTime, Step, ActionName, GroupName, ExitCode, ActionOutput" -ForegroundColor Cyan
 
         # Build ResourceID list for WMI query
         $resourceIDs = ($CollectionMembers | ForEach-Object { $_.ResourceID }) -join "','"
 
-        # Query SMS_StatusMessage for TS execution messages
-        # MessageType 11171 is for TS step execution
-        $wmiQuery = "SELECT * FROM SMS_StatusMessage WHERE MachineName IN (SELECT Name FROM SMS_R_System WHERE ResourceId IN ('$resourceIDs')) AND Component = 'Task Sequence Engine' AND PackageID = '$TaskSequenceID'"
+        # Query SMS_TaskSequenceExecutionStatus for TS execution messages
+        # This is the correct class that has ActionOutput!
+        $wmiQuery = "SELECT * FROM SMS_TaskSequenceExecutionStatus WHERE ResourceID IN ('$resourceIDs') AND PackageID = '$TaskSequenceID'"
 
         if ($DaysBack -gt 0) {
             $startDate = (Get-Date).AddDays(-$DaysBack)
             $wmiDate = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($startDate)
-            $wmiQuery += " AND Time >= '$wmiDate'"
+            $wmiQuery += " AND ExecutionTime >= '$wmiDate'"
         }
 
         Write-Host "[DEBUG] WMI Query: $wmiQuery" -ForegroundColor Gray
 
         try {
-            $statusMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+            $executionMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
                 -ComputerName $script:sccmSiteServer `
                 -Query $wmiQuery `
                 -ErrorAction SilentlyContinue
 
-            if ($statusMessages) {
-                Write-Host "[SUCCESS] Retrieved $(@($statusMessages).Count) detailed status messages from WMI" -ForegroundColor Green
+            if ($executionMessages) {
+                Write-Host "[SUCCESS] Retrieved $(@($executionMessages).Count) detailed execution messages from WMI" -ForegroundColor Green
 
-                # Group by MachineName and add to existing results
-                $messagesByMachine = $statusMessages | Group-Object -Property MachineName
+                # Create ResourceID to ComputerName mapping
+                $resourceIDtoName = @{}
+                foreach ($member in $CollectionMembers) {
+                    $resourceIDtoName[$member.ResourceID] = $member.Name
+                }
 
-                foreach ($group in $messagesByMachine) {
-                    $machineName = $group.Name
-                    if ($resultHash.ContainsKey($machineName)) {
-                        # Add detailed messages to existing entry
-                        $resultHash[$machineName].DetailedMessages = $group.Group
-                    }
-                    elseif ($monitoringMachines.ContainsKey($machineName)) {
-                        # Create new entry if machine is in monitoring collection
-                        $resultHash[$machineName] = @{
-                            Messages = @()
-                            Status = "Unknown"
-                            DetailedMessages = $group.Group
+                # Group by ResourceID and add to existing results
+                $messagesByResource = $executionMessages | Group-Object -Property ResourceID
+
+                foreach ($group in $messagesByResource) {
+                    $resourceID = $group.Name
+                    $computerName = $resourceIDtoName[$resourceID]
+
+                    if ($computerName) {
+                        if ($resultHash.ContainsKey($computerName)) {
+                            # Add detailed messages to existing entry
+                            $resultHash[$computerName].DetailedMessages = $group.Group
+                        }
+                        else {
+                            # Create new entry
+                            $resultHash[$computerName] = @{
+                                Messages = @()
+                                Status = "Unknown"
+                                DetailedMessages = $group.Group
+                            }
                         }
                     }
                 }
 
-                Write-Host "[SUCCESS] Added detailed execution messages to $($messagesByMachine.Count) device(s)" -ForegroundColor Green
+                Write-Host "[SUCCESS] Added detailed execution messages to $($messagesByResource.Count) device(s)" -ForegroundColor Green
             }
             else {
-                Write-Host "[WARNING] No detailed status messages found in SMS_StatusMessage" -ForegroundColor Yellow
+                Write-Host "[WARNING] No detailed execution messages found in SMS_TaskSequenceExecutionStatus" -ForegroundColor Yellow
             }
         }
         catch {
-            Write-Host "[ERROR] Failed to query SMS_StatusMessage: $_" -ForegroundColor Red
+            Write-Host "[ERROR] Failed to query SMS_TaskSequenceExecutionStatus: $_" -ForegroundColor Red
             Write-Host "[ERROR] Query was: $wmiQuery" -ForegroundColor Red
         }
 
@@ -475,28 +486,30 @@ function Save-TaskSequenceExecutionLog {
         $executionSteps = @()
 
         foreach ($msg in $Messages) {
-                # Get-CMDeploymentStatusDetails returns properties with spaces in their names
-                # Access them using the property name syntax with spaces
+                # SMS_TaskSequenceExecutionStatus WMI class has properties WITHOUT spaces
+                # ExecutionTime is WMI datetime format that needs conversion
 
-                # Format execution time - Get-CMDeploymentStatusDetails returns it as 'Execution Time'
-                $executionTime = if ($msg.'Execution Time') {
+                # Format execution time from WMI datetime
+                $executionTime = ""
+                if ($msg.ExecutionTime) {
                     try {
-                        # It's already formatted as a datetime, just convert to string
-                        ([datetime]$msg.'Execution Time').ToString("yyyy-MM-dd HH:mm:ss")
+                        $executionTime = [System.Management.ManagementDateTimeConverter]::ToDateTime($msg.ExecutionTime).ToString("yyyy-MM-dd HH:mm:ss")
                     }
-                    catch { $msg.'Execution Time' }
-                } else { "" }
+                    catch {
+                        $executionTime = $msg.ExecutionTime
+                    }
+                }
 
                 $executionSteps += [PSCustomObject]@{
                     ComputerName = $ComputerName
                     ExecutionTime = $executionTime
-                    Step = if ($msg.Step) { $msg.Step } else { 0 }
-                    ActionName = if ($msg.'Action Name') { $msg.'Action Name' } else { "" }
-                    GroupName = if ($msg.'Group Name') { $msg.'Group Name' } else { "" }
-                    LastStatusMsgName = if ($msg.'Last Message Name') { $msg.'Last Message Name' } else { "" }
-                    LastMessageID = if ($msg.'Last Message ID') { $msg.'Last Message ID' } else { "" }
-                    ExitCode = if ($null -ne $msg.'Exit Code') { $msg.'Exit Code' } else { "" }
-                    ActionOutput = if ($msg.'Action Output') { $msg.'Action Output' } else { "" }  # Full output, no truncation
+                    Step = if ($null -ne $msg.Step) { $msg.Step } else { 0 }
+                    ActionName = if ($msg.ActionName) { $msg.ActionName } else { "" }
+                    GroupName = if ($msg.GroupName) { $msg.GroupName } else { "" }
+                    LastStatusMsgName = if ($msg.LastStatusMsgName) { $msg.LastStatusMsgName } else { "" }
+                    LastMessageID = if ($msg.LastStatusMsgID) { $msg.LastStatusMsgID } else { "" }
+                    ExitCode = if ($null -ne $msg.ExitCode) { $msg.ExitCode } else { "" }
+                    ActionOutput = if ($msg.ActionOutput) { $msg.ActionOutput } else { "" }  # Full output, NO truncation!
                 }
             }
 
