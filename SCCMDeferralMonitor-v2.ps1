@@ -374,346 +374,9 @@ function Get-DeviceOSVersion {
 
 #endregion
 
-#region Jumpbox Functions
+#region Direct Connection Functions
 
-$script:jumpboxSession = $null
-
-function Connect-ToJumpbox {
-    param([string]$JumpboxServer)
-
-    try {
-        Write-Host "Connecting to jumpbox: $JumpboxServer" -ForegroundColor Cyan
-
-        # Close existing session if any
-        if ($script:jumpboxSession) {
-            Remove-PSSession $script:jumpboxSession -ErrorAction SilentlyContinue
-        }
-
-        $script:jumpboxSession = New-PSSession -ComputerName $JumpboxServer -ErrorAction Stop
-
-        Write-Host "Connected to jumpbox successfully" -ForegroundColor Green
-        return $true
-    }
-    catch {
-        Write-Host "Failed to connect to jumpbox: $_" -ForegroundColor Red
-        return $false
-    }
-}
-
-function Disconnect-FromJumpbox {
-    if ($script:jumpboxSession) {
-        Remove-PSSession $script:jumpboxSession -ErrorAction SilentlyContinue
-        $script:jumpboxSession = $null
-        Write-Host "Disconnected from jumpbox" -ForegroundColor Gray
-    }
-}
-
-function Test-ComputerOnlineViaJumpbox {
-    param(
-        [string]$ComputerName,
-        [int]$TimeoutMs = 1000
-    )
-
-    if (-not $script:jumpboxSession) {
-        return $false
-    }
-
-    try {
-        $result = Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
-            param($computer, $timeout)
-            try {
-                $ping = New-Object System.Net.NetworkInformation.Ping
-                $pingResult = $ping.Send($computer, $timeout)
-                return ($pingResult.Status -eq 'Success')
-            }
-            catch {
-                return $false
-            }
-        } -ArgumentList $ComputerName, $TimeoutMs
-
-        return $result
-    }
-    catch {
-        return $false
-    }
-}
-
-function Confirm-ComputerIdentityViaJumpbox {
-    param(
-        [string]$ExpectedName,
-        [int]$TimeoutSeconds = 3
-    )
-
-    if (-not $script:jumpboxSession) {
-        return @{
-            IsValid = $false
-            ActualName = "Unknown"
-            ErrorMessage = "No jumpbox session"
-        }
-    }
-
-    try {
-        # Use simple Get-WmiObject from jumpbox
-        $result = Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
-            param($computerName, $timeout)
-
-            $verifyResult = @{
-                IsValid = $false
-                ActualName = "Unknown"
-                ErrorMessage = ""
-            }
-
-            try {
-                # Simple WMI query with timeout
-                $wmiTimeout = $timeout * 1000  # Convert to milliseconds
-                $computerSystem = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $computerName -ErrorAction Stop -AsJob | Wait-Job -Timeout $timeout | Receive-Job
-
-                if ($computerSystem) {
-                    $verifyResult.ActualName = $computerSystem.Name
-
-                    if ($verifyResult.ActualName -eq $computerName) {
-                        $verifyResult.IsValid = $true
-                    }
-                    else {
-                        $verifyResult.ErrorMessage = "Hostname mismatch: Expected '$computerName', got '$($verifyResult.ActualName)'"
-                    }
-                }
-                else {
-                    $verifyResult.ErrorMessage = "WMI query returned null"
-                }
-            }
-            catch {
-                $verifyResult.ErrorMessage = "WMI error: $($_.Exception.Message)"
-            }
-
-            return $verifyResult
-        } -ArgumentList $ExpectedName, $TimeoutSeconds
-
-        return $result
-    }
-    catch {
-        return @{
-            IsValid = $false
-            ActualName = "Unknown"
-            ErrorMessage = "Jumpbox command failed: $($_.Exception.Message)"
-        }
-    }
-}
-
-function Get-DeferralLogDataViaJumpbox {
-    param(
-        [string]$LogPath,
-        [string]$ComputerName
-    )
-
-    if (-not $script:jumpboxSession) {
-        return @{
-            DeferralCount = 0
-            TSTriggerAttempted = $false
-            TSTriggerSuccess = $false
-            LastDeferralDate = "N/A"
-            LastTriggerDate = "N/A"
-            LogAvailable = $false
-            ErrorMessage = "No jumpbox session"
-        }
-    }
-
-    try {
-        $result = Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
-            param($computer, $logPathLocal)
-
-            $logResult = @{
-                DeferralCount = 0
-                TSTriggerAttempted = $false
-                TSTriggerSuccess = $false
-                LastDeferralDate = "N/A"
-                LastTriggerDate = "N/A"
-                LogAvailable = $false
-                ErrorMessage = ""
-            }
-
-            try {
-                $uncPath = "\\$computer\$($logPathLocal.Replace(':', '$'))"
-
-                if (-not (Test-Path $uncPath)) {
-                    $logResult.ErrorMessage = "Log file not found"
-                    return $logResult
-                }
-
-                $logContent = Get-Content -Path $uncPath -ErrorAction Stop
-
-                if ($logContent.Count -eq 0) {
-                    $logResult.ErrorMessage = "Log file is empty"
-                    return $logResult
-                }
-
-                $logResult.LogAvailable = $true
-
-                # Parse log entries
-                $deferrals = 0
-                $triggerAttempted = $false
-                $triggerSuccess = $false
-                $lastDeferralDate = $null
-                $lastTriggerDate = $null
-
-                foreach ($line in $logContent) {
-                    if ($line -match '^\[([\d-]+\s+[\d:]+)\]\s+\[(\w+)\]\s+(.+)$') {
-                        $timestamp = [datetime]::ParseExact($matches[1], "yyyy-MM-dd HH:mm:ss", $null)
-                        $message = $matches[3]
-
-                        if ($message -match 'Deferral count incremented immediately:\s+(\d+)\s+/\s+\d+') {
-                            $deferrals = [int]$matches[1]
-                            $lastDeferralDate = $timestamp
-                        }
-
-                        if ($message -match 'Deferral count reset to 0') {
-                            $deferrals = 0
-                        }
-
-                        if ($message -match 'User chose to defer') {
-                            $lastDeferralDate = $timestamp
-                        }
-
-                        if ($message -match 'Attempting to start Task Sequence') {
-                            $triggerAttempted = $true
-                            $lastTriggerDate = $timestamp
-                        }
-
-                        if ($message -match 'Task Sequence (triggered|started) successfully') {
-                            $triggerSuccess = $true
-                        }
-
-                        if ($message -match 'Failed to (start Task Sequence|trigger schedule)') {
-                            $triggerSuccess = $false
-                        }
-                    }
-                }
-
-                $logResult.DeferralCount = $deferrals
-                $logResult.TSTriggerAttempted = $triggerAttempted
-                $logResult.TSTriggerSuccess = $triggerSuccess
-
-                if ($lastDeferralDate) {
-                    $logResult.LastDeferralDate = $lastDeferralDate.ToString("yyyy-MM-dd HH:mm:ss")
-                }
-
-                if ($lastTriggerDate) {
-                    $logResult.LastTriggerDate = $lastTriggerDate.ToString("yyyy-MM-dd HH:mm:ss")
-                }
-            }
-            catch {
-                $logResult.ErrorMessage = $_.Exception.Message
-            }
-
-            return $logResult
-        } -ArgumentList $ComputerName, $LogPath
-
-        return $result
-    }
-    catch {
-        return @{
-            DeferralCount = 0
-            TSTriggerAttempted = $false
-            TSTriggerSuccess = $false
-            LastDeferralDate = "N/A"
-            LastTriggerDate = "N/A"
-            LogAvailable = $false
-            ErrorMessage = "Jumpbox command failed: $($_.Exception.Message)"
-        }
-    }
-}
-
-function Copy-DeferralLogViaJumpbox {
-    param(
-        [string]$ComputerName,
-        [string]$SourcePath,
-        [string]$DestinationDirectory
-    )
-
-    if (-not $script:jumpboxSession) {
-        return $false
-    }
-
-    try {
-        # Copy from client to jumpbox temp location using C$ share
-        $tempPath = Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
-            param($computer, $sourcePath)
-
-            # Build UNC path using C$ admin share
-            # Example: \\COMPUTER\C$\Windows\ccm\logs\TaskSequenceDeferral.log
-            $uncPath = "\\$computer\" + $sourcePath.Replace(':', '$')
-
-            Write-Verbose "Attempting to access: $uncPath"
-
-            if (-not (Test-Path $uncPath)) {
-                Write-Warning "Log file not found: $uncPath"
-                return $null
-            }
-
-            # Check if we need to update (compare with existing temp file)
-            $tempFile = "$env:TEMP\$computer`_TaskSequenceDeferral.log"
-
-            # Always copy to get latest version
-            Copy-Item $uncPath $tempFile -Force -ErrorAction Stop
-            Write-Verbose "Copied to temp: $tempFile"
-
-            return $tempFile
-        } -ArgumentList $ComputerName, $SourcePath -Verbose
-
-        if ($tempPath) {
-            # Copy from jumpbox temp to local destination
-            $destFile = Join-Path $DestinationDirectory "$ComputerName`_TaskSequenceDeferral.log"
-
-            # Only copy if destination doesn't exist or source is newer
-            $shouldCopy = $false
-            if (-not (Test-Path $destFile)) {
-                $shouldCopy = $true
-            }
-            else {
-                # Get file times from jumpbox
-                $sourceTime = Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
-                    param($path)
-                    (Get-Item $path).LastWriteTime
-                } -ArgumentList $tempPath
-
-                $destTime = (Get-Item $destFile).LastWriteTime
-
-                if ($sourceTime -gt $destTime) {
-                    $shouldCopy = $true
-                }
-            }
-
-            if ($shouldCopy) {
-                Copy-Item -FromSession $script:jumpboxSession -Path $tempPath -Destination $destFile -Force
-                Write-Host "  Copied deferral log from $ComputerName" -ForegroundColor Green
-            }
-            else {
-                Write-Host "  Deferral log already up to date for $ComputerName" -ForegroundColor Gray
-            }
-
-            # Clean up temp file on jumpbox
-            Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
-                param($temp)
-                Remove-Item $temp -Force -ErrorAction SilentlyContinue
-            } -ArgumentList $tempPath
-
-            return $true
-        }
-
-        Write-Host "  No deferral log found for $ComputerName" -ForegroundColor Yellow
-        return $false
-    }
-    catch {
-        Write-Host "  Failed to copy deferral log from ${ComputerName}: $_" -ForegroundColor Red
-        return $false
-    }
-}
-
-#endregion
-
-#region Direct Connection Functions (fallback)
-
-function Test-ComputerOnlineDirect {
+function Test-ComputerOnline {
     param(
         [string]$ComputerName,
         [int]$TimeoutMs = 1000
@@ -725,6 +388,184 @@ function Test-ComputerOnlineDirect {
         return ($result.Status -eq 'Success')
     }
     catch {
+        return $false
+    }
+}
+
+function Confirm-ComputerIdentity {
+    param(
+        [string]$ExpectedName,
+        [int]$TimeoutSeconds = 3
+    )
+
+    $verifyResult = @{
+        IsValid = $false
+        ActualName = "Unknown"
+        ErrorMessage = ""
+    }
+
+    try {
+        # Simple WMI query with timeout
+        $computerSystem = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $ExpectedName -ErrorAction Stop -AsJob | Wait-Job -Timeout $TimeoutSeconds | Receive-Job
+
+        if ($computerSystem) {
+            $verifyResult.ActualName = $computerSystem.Name
+
+            if ($verifyResult.ActualName -eq $ExpectedName) {
+                $verifyResult.IsValid = $true
+            }
+            else {
+                $verifyResult.ErrorMessage = "Hostname mismatch: Expected '$ExpectedName', got '$($verifyResult.ActualName)'"
+            }
+        }
+        else {
+            $verifyResult.ErrorMessage = "WMI query returned null"
+        }
+    }
+    catch {
+        $verifyResult.ErrorMessage = "WMI error: $($_.Exception.Message)"
+    }
+
+    return $verifyResult
+}
+
+function Get-DeferralLogData {
+    param(
+        [string]$LogPath,
+        [string]$ComputerName
+    )
+
+    $logResult = @{
+        DeferralCount = 0
+        TSTriggerAttempted = $false
+        TSTriggerSuccess = $false
+        LastDeferralDate = "N/A"
+        LastTriggerDate = "N/A"
+        LogAvailable = $false
+        ErrorMessage = ""
+    }
+
+    try {
+        # Build UNC path using C$ admin share
+        $uncPath = "\\$ComputerName\$($LogPath.Replace(':', '$'))"
+
+        if (-not (Test-Path $uncPath)) {
+            $logResult.ErrorMessage = "Log file not found"
+            return $logResult
+        }
+
+        $logContent = Get-Content -Path $uncPath -ErrorAction Stop
+
+        if ($logContent.Count -eq 0) {
+            $logResult.ErrorMessage = "Log file is empty"
+            return $logResult
+        }
+
+        $logResult.LogAvailable = $true
+
+        # Parse log entries
+        $deferrals = 0
+        $triggerAttempted = $false
+        $triggerSuccess = $false
+        $lastDeferralDate = $null
+        $lastTriggerDate = $null
+
+        foreach ($line in $logContent) {
+            if ($line -match '^\[([\d-]+\s+[\d:]+)\]\s+\[(\w+)\]\s+(.+)$') {
+                $timestamp = [datetime]::ParseExact($matches[1], "yyyy-MM-dd HH:mm:ss", $null)
+                $message = $matches[3]
+
+                if ($message -match 'Deferral count incremented immediately:\s+(\d+)\s+/\s+\d+') {
+                    $deferrals = [int]$matches[1]
+                    $lastDeferralDate = $timestamp
+                }
+
+                if ($message -match 'Deferral count reset to 0') {
+                    $deferrals = 0
+                }
+
+                if ($message -match 'User chose to defer') {
+                    $lastDeferralDate = $timestamp
+                }
+
+                if ($message -match 'Attempting to start Task Sequence') {
+                    $triggerAttempted = $true
+                    $lastTriggerDate = $timestamp
+                }
+
+                if ($message -match 'Task Sequence (triggered|started) successfully') {
+                    $triggerSuccess = $true
+                }
+
+                if ($message -match 'Failed to (start Task Sequence|trigger schedule)') {
+                    $triggerSuccess = $false
+                }
+            }
+        }
+
+        $logResult.DeferralCount = $deferrals
+        $logResult.TSTriggerAttempted = $triggerAttempted
+        $logResult.TSTriggerSuccess = $triggerSuccess
+
+        if ($lastDeferralDate) {
+            $logResult.LastDeferralDate = $lastDeferralDate.ToString("yyyy-MM-dd HH:mm:ss")
+        }
+
+        if ($lastTriggerDate) {
+            $logResult.LastTriggerDate = $lastTriggerDate.ToString("yyyy-MM-dd HH:mm:ss")
+        }
+    }
+    catch {
+        $logResult.ErrorMessage = $_.Exception.Message
+    }
+
+    return $logResult
+}
+
+function Copy-DeferralLog {
+    param(
+        [string]$ComputerName,
+        [string]$SourcePath,
+        [string]$DestinationDirectory
+    )
+
+    try {
+        # Build UNC path using C$ admin share
+        $uncPath = "\\$ComputerName\$($SourcePath.Replace(':', '$'))"
+
+        if (-not (Test-Path $uncPath)) {
+            Write-Host "  No deferral log found for $ComputerName" -ForegroundColor Yellow
+            return $false
+        }
+
+        $destFile = Join-Path $DestinationDirectory "$ComputerName`_TaskSequenceDeferral.log"
+
+        # Only copy if destination doesn't exist or source is newer
+        $shouldCopy = $false
+        if (-not (Test-Path $destFile)) {
+            $shouldCopy = $true
+        }
+        else {
+            $sourceTime = (Get-Item $uncPath).LastWriteTime
+            $destTime = (Get-Item $destFile).LastWriteTime
+
+            if ($sourceTime -gt $destTime) {
+                $shouldCopy = $true
+            }
+        }
+
+        if ($shouldCopy) {
+            Copy-Item $uncPath $destFile -Force -ErrorAction Stop
+            Write-Host "  Copied deferral log from $ComputerName" -ForegroundColor Green
+        }
+        else {
+            Write-Host "  Deferral log already up to date for $ComputerName" -ForegroundColor Gray
+        }
+
+        return $true
+    }
+    catch {
+        Write-Host "  Failed to copy deferral log from ${ComputerName}: $_" -ForegroundColor Red
         return $false
     }
 }
@@ -827,8 +668,6 @@ try {
     $win11Override = [System.Convert]::ToBoolean($config.Configuration.Settings.Monitoring.Windows11OverrideSuccess)
     $hostnameVerificationTimeout = [int]$config.Configuration.Settings.Monitoring.HostnameVerificationTimeoutSeconds
     $pingTimeout = [int]$config.Configuration.Settings.Monitoring.PingTimeoutMs
-    $useJumpbox = [System.Convert]::ToBoolean($config.Configuration.Settings.Monitoring.UseJumpbox)
-    $jumpboxServer = $config.Configuration.Settings.Monitoring.JumpboxServer
 
     # Store site server in script scope
     $script:sccmSiteServer = $siteServer
@@ -896,13 +735,6 @@ try {
     Write-Host "Collection: $($collectionInfo.Name) ($($collectionInfo.ID))" -ForegroundColor Green
     Write-Host "Task Sequence: $($tsInfo.Name) ($($tsInfo.PackageID))" -ForegroundColor Green
 
-    # Connect to jumpbox if needed
-    if ($useJumpbox -and -not [string]::IsNullOrEmpty($jumpboxServer)) {
-        if (-not (Connect-ToJumpbox -JumpboxServer $jumpboxServer)) {
-            throw "Failed to connect to jumpbox: $jumpboxServer"
-        }
-    }
-
     # Get collection members
     $members = Get-CollectionMembers -CollectionID $collectionID
 
@@ -924,12 +756,7 @@ try {
         Write-Host "[$count/$($members.Count)] Processing: $computerName" -ForegroundColor Yellow
 
         # Check if online
-        if ($useJumpbox -and $script:jumpboxSession) {
-            $isOnline = Test-ComputerOnlineViaJumpbox -ComputerName $computerName -TimeoutMs $pingTimeout
-        }
-        else {
-            $isOnline = Test-ComputerOnlineDirect -ComputerName $computerName -TimeoutMs $pingTimeout
-        }
+        $isOnline = Test-ComputerOnline -ComputerName $computerName -TimeoutMs $pingTimeout
 
         Write-Host "  Online: $isOnline" -ForegroundColor $(if ($isOnline) { "Green" } else { "Red" })
 
@@ -941,13 +768,7 @@ try {
         if ($isOnline) {
             Write-Host "  Verifying hostname..." -ForegroundColor Cyan
 
-            if ($useJumpbox -and $script:jumpboxSession) {
-                $verification = Confirm-ComputerIdentityViaJumpbox -ExpectedName $computerName -TimeoutSeconds $hostnameVerificationTimeout
-            }
-            else {
-                # Direct verification - implement if needed
-                $verification = @{ IsValid = $true; ActualName = $computerName; ErrorMessage = "" }
-            }
+            $verification = Confirm-ComputerIdentity -ExpectedName $computerName -TimeoutSeconds $hostnameVerificationTimeout
 
             $hostnameVerified = $verification.IsValid
             $actualHostname = $verification.ActualName
@@ -993,51 +814,46 @@ try {
         }
 
         if ($isOnline -and $hostnameVerified) {
-            if ($useJumpbox -and $script:jumpboxSession) {
-                $deferralData = Get-DeferralLogDataViaJumpbox -LogPath $deferralLogPath -ComputerName $computerName
+            $deferralData = Get-DeferralLogData -LogPath $deferralLogPath -ComputerName $computerName
 
-                if ($deferralData.LogAvailable) {
-                    Write-Host "  Deferral Count: $($deferralData.DeferralCount)" -ForegroundColor Gray
-                    Write-Host "  TS Trigger Attempted: $($deferralData.TSTriggerAttempted)" -ForegroundColor Gray
-                    Write-Host "  TS Trigger Success: $($deferralData.TSTriggerSuccess)" -ForegroundColor Gray
+            if ($deferralData.LogAvailable) {
+                Write-Host "  Deferral Count: $($deferralData.DeferralCount)" -ForegroundColor Gray
+                Write-Host "  TS Trigger Attempted: $($deferralData.TSTriggerAttempted)" -ForegroundColor Gray
+                Write-Host "  TS Trigger Success: $($deferralData.TSTriggerSuccess)" -ForegroundColor Gray
 
-                    # Copy deferral log
-                    Copy-DeferralLogViaJumpbox -ComputerName $computerName -SourcePath $deferralLogPath -DestinationDirectory $logsDirectory
-                }
+                # Copy deferral log
+                Copy-DeferralLog -ComputerName $computerName -SourcePath $deferralLogPath -DestinationDirectory $logsDirectory
             }
         }
 
-        # Build device data object
+        # Build device data object (explicitly cast booleans to ensure proper JSON serialization)
         $deviceData = [PSCustomObject]@{
             DeviceName = $computerName
             ResourceID = $resourceID
             PrimaryUser = $primaryUser
-            IsOnline = $isOnline
+            IsOnline = [bool]$isOnline
             OnlineStatus = if ($isOnline) { "Online" } else { "Offline" }
-            HostnameVerified = $hostnameVerified
+            HostnameVerified = [bool]$hostnameVerified
             ActualHostname = $actualHostname
             VerificationError = $verificationError
             TSStatus = $tsStatus
             OSVersion = $osVersion
-            IsWindows11 = $isWindows11
+            IsWindows11 = [bool]$isWindows11
             DeferralCount = if ($deferralData.LogAvailable) { $deferralData.DeferralCount } else { "N/A" }
             TSTriggerAttempted = if ($deferralData.LogAvailable) { $deferralData.TSTriggerAttempted } else { "N/A" }
             TSTriggerSuccess = if ($deferralData.LogAvailable) { $deferralData.TSTriggerSuccess } else { "N/A" }
-            LogAvailable = $deferralData.LogAvailable
+            LogAvailable = [bool]$deferralData.LogAvailable
             LastDeferralDate = if ($deferralData.LogAvailable) { $deferralData.LastDeferralDate } else { "N/A" }
             LastTriggerDate = if ($deferralData.LogAvailable) { $deferralData.LastTriggerDate } else { "N/A" }
             DeferralLogPath = "$computerName`_TaskSequenceDeferral.log"
             TSStatusMessagesPath = if ($tsMessagesDownloaded) { "$computerName`_TSStatusMessages.json" } else { "" }
-            TSStatusMessagesAvailable = $tsMessagesDownloaded
+            TSStatusMessagesAvailable = [bool]$tsMessagesDownloaded
             LastUpdated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         }
 
         $deviceDataList += $deviceData
         Write-Host ""
     }
-
-    # Disconnect from jumpbox
-    Disconnect-FromJumpbox
 
     # Clean up orphaned logs
     Write-Host "Cleaning up orphaned log files..." -ForegroundColor Cyan
@@ -1058,8 +874,6 @@ try {
         TaskSequenceID = $taskSequenceID
         TaskSequenceName = $tsInfo.Name
         Windows11Override = $win11Override
-        UseJumpbox = $useJumpbox
-        JumpboxServer = if ($useJumpbox) { $jumpboxServer } else { "Direct Connection" }
     }
 
     $metadataPath = Join-Path $dataDirectory "metadata.json"
@@ -1075,9 +889,6 @@ try {
     exit 0
 }
 catch {
-    # Ensure jumpbox is disconnected on error
-    Disconnect-FromJumpbox
-
     Write-Host "`n========================================" -ForegroundColor Red
     Write-Host "ERROR: $_" -ForegroundColor Red
     Write-Host "========================================`n" -ForegroundColor Red
