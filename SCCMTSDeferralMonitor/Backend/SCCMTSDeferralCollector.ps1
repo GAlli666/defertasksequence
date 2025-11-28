@@ -565,32 +565,78 @@ function Get-DevicePrimaryUser {
     }
 }
 
-function Get-DeviceOSVersion {
-    param([string]$ComputerName)
+function Get-DeviceOSInfo {
+    param(
+        [string]$ComputerName,
+        [string]$ResourceID
+    )
 
     try {
-        $currentLocation = Get-Location
-        Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
+        # Query SMS_R_System for detailed OS information including build number
+        $query = "SELECT Build01, Caption0, Version0 FROM SMS_R_System WHERE ResourceID = '$ResourceID'"
 
-        $device = Get-CMDevice -Name $ComputerName -ErrorAction SilentlyContinue
+        $system = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+            -ComputerName $script:sccmSiteServer `
+            -Query $query `
+            -ErrorAction SilentlyContinue
 
-        Set-Location $currentLocation
+        if ($system) {
+            $build = $system.Build01
+            $caption = $system.Caption0
+            $version = $system.Version0
 
-        if ($device -and $device.OSVersion) {
-            # Windows 11 builds: 22000, 22621, 26100, etc. (all 10.0.2xxxx and above)
-            if ($device.OSVersion -match '10\.0\.(2[2-9]\d{3}|[3-9]\d{4})') {
-                return "Windows 11"
+            # Determine OS name from build number
+            $osName = "Unknown"
+            $isWindows11 = $false
+
+            if ($build) {
+                # Parse build number (format: 10.0.xxxxx)
+                if ($build -match '10\.0\.(\d+)') {
+                    $buildNumber = [int]$matches[1]
+
+                    # Windows 11 builds: 22000 and above
+                    if ($buildNumber -ge 22000) {
+                        $osName = "Windows 11"
+                        $isWindows11 = $true
+                    }
+                    # Windows 10 builds
+                    elseif ($buildNumber -ge 10240) {
+                        $osName = "Windows 10"
+                    }
+                }
             }
-            return $device.OSVersion
+
+            # Fall back to caption if available
+            if ($osName -eq "Unknown" -and $caption) {
+                $osName = $caption
+            }
+
+            return @{
+                OSName = $osName
+                Build = $build
+                BuildNumber = if ($build -match '10\.0\.(\d+)') { $matches[1] } else { "" }
+                Version = $version
+                IsWindows11 = $isWindows11
+            }
         }
 
-        return "Unknown"
+        return @{
+            OSName = "Unknown"
+            Build = ""
+            BuildNumber = ""
+            Version = ""
+            IsWindows11 = $false
+        }
     }
     catch {
-        if ($currentLocation) {
-            Set-Location $currentLocation -ErrorAction SilentlyContinue
+        Write-Host "  [ERROR] Failed to get OS info: $_" -ForegroundColor Red
+        return @{
+            OSName = "Unknown"
+            Build = ""
+            BuildNumber = ""
+            Version = ""
+            IsWindows11 = $false
         }
-        return "Unknown"
     }
 }
 
@@ -1001,9 +1047,9 @@ try {
         $primaryUser = Get-DevicePrimaryUser -ComputerName $computerName
         Write-Host "  Primary User: $primaryUser" -ForegroundColor Gray
 
-        $osVersion = Get-DeviceOSVersion -ComputerName $computerName
-        $isWindows11 = ($osVersion -eq "Windows 11")
-        Write-Host "  OS: $osVersion" -ForegroundColor Gray
+        $osInfo = Get-DeviceOSInfo -ComputerName $computerName -ResourceID $resourceID
+        $isWindows11 = $osInfo.IsWindows11
+        Write-Host "  OS: $($osInfo.OSName) (Build: $($osInfo.BuildNumber))" -ForegroundColor Gray
 
         # Get TS status from SCCM deployment status
         $tsStatus = Get-TaskSequenceDeploymentStatusFromSCCM -ResourceID $resourceID -TaskSequenceID $taskSequenceID -ComputerName $computerName
@@ -1058,7 +1104,9 @@ try {
             ActualHostname = $actualHostname
             VerificationError = $verificationError
             TSStatus = $tsStatus
-            OSVersion = $osVersion
+            OSName = $osInfo.OSName
+            OSVersion = $osInfo.Build
+            OSBuildNumber = $osInfo.BuildNumber
             IsWindows11 = [bool]$isWindows11
             DeferralCount = if ($deferralData.LogAvailable) { $deferralData.DeferralCount } else { "N/A" }
             TSTriggerAttempted = if ($deferralData.LogAvailable) { $deferralData.TSTriggerAttempted } else { "N/A" }

@@ -284,6 +284,8 @@ $xaml = @'
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
 
+                <DataGridTextColumn Header="OS Name" Binding="{Binding OSName}" Width="100"/>
+                <DataGridTextColumn Header="Build" Binding="{Binding OSBuildNumber}" Width="80"/>
                 <DataGridTextColumn Header="TS Status" Binding="{Binding TSStatus}" Width="120"/>
                 <DataGridTextColumn Header="Deferral Count" Binding="{Binding DeferralCount}" Width="110"/>
                 <DataGridTextColumn Header="TS Trigger" Binding="{Binding TSTriggerAttempted}" Width="90"/>
