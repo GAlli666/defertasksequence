@@ -306,11 +306,11 @@ function Get-AllTaskSequenceDataFromSCCM {
                     $statusDetails = $deploymentStatus | Get-CMDeploymentStatusDetails -ErrorAction SilentlyContinue
 
                     if ($statusDetails) {
-                        # Filter by date if needed
+                        # Filter by date if needed - use SummarizationTime property
                         if ($DaysBack -gt 0) {
                             $startDate = (Get-Date).AddDays(-$DaysBack)
                             $statusDetails = $statusDetails | Where-Object {
-                                $_.'Execution Time' -and [datetime]$_.'Execution Time' -ge $startDate
+                                $_.SummarizationTime -and [datetime]$_.SummarizationTime -ge $startDate
                             }
                             Write-Host "[DEBUG] Date filter: Last $DaysBack days (since $($startDate.ToString('yyyy-MM-dd')))" -ForegroundColor Gray
                         }
@@ -353,24 +353,23 @@ function Get-AllTaskSequenceDataFromSCCM {
         $resultHash = @{}
         foreach ($group in $messagesByDevice) {
             if ($group.Name) {
-                # Get the most recent status for this device
-                $latestRecord = $group.Group | Sort-Object 'Execution Time' -Descending | Select-Object -First 1
+                # Get the most recent status for this device - use SummarizationTime property
+                $latestRecord = $group.Group | Sort-Object SummarizationTime -Descending | Select-Object -First 1
 
-                # Determine status from the latest record
+                # Determine status from StatusDescription
                 $tsStatus = "Unknown"
-                if ($latestRecord.'Deployment Status') {
-                    $tsStatus = $latestRecord.'Deployment Status'
-                }
-                elseif ($latestRecord.'Last Message Name') {
-                    # Map message name to status
-                    switch -Wildcard ($latestRecord.'Last Message Name') {
+                if ($latestRecord.StatusDescription) {
+                    # Map status description to our status values
+                    switch -Wildcard ($latestRecord.StatusDescription) {
                         "*Success*" { $tsStatus = "Success" }
                         "*Complete*" { $tsStatus = "Success" }
+                        "*finished successfully*" { $tsStatus = "Success" }
                         "*Running*" { $tsStatus = "In Progress" }
                         "*Progress*" { $tsStatus = "In Progress" }
+                        "*reboot*" { $tsStatus = "In Progress" }
                         "*Failed*" { $tsStatus = "Failed" }
                         "*Error*" { $tsStatus = "Failed" }
-                        default { $tsStatus = $latestRecord.'Last Message Name' }
+                        default { $tsStatus = "In Progress" }
                     }
                 }
 
@@ -381,7 +380,66 @@ function Get-AllTaskSequenceDataFromSCCM {
             }
         }
 
-        Write-Host "[SUCCESS] Processed $($resultHash.Count) devices with TS data" -ForegroundColor Green
+        Write-Host "[SUCCESS] Processed $($resultHash.Count) devices with TS data from cmdlets" -ForegroundColor Green
+
+        # Now get detailed execution messages via WMI (SMS_StatusMessage) - collection-wide
+        Write-Host "`n[INFO] Querying SMS_StatusMessage WMI class for detailed step execution data..." -ForegroundColor Cyan
+
+        # Build ResourceID list for WMI query
+        $resourceIDs = ($CollectionMembers | ForEach-Object { $_.ResourceID }) -join "','"
+
+        # Query SMS_StatusMessage for TS execution messages
+        # MessageType 11171 is for TS step execution
+        $wmiQuery = "SELECT * FROM SMS_StatusMessage WHERE MachineName IN (SELECT Name FROM SMS_R_System WHERE ResourceId IN ('$resourceIDs')) AND Component = 'Task Sequence Engine' AND PackageID = '$TaskSequenceID'"
+
+        if ($DaysBack -gt 0) {
+            $startDate = (Get-Date).AddDays(-$DaysBack)
+            $wmiDate = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($startDate)
+            $wmiQuery += " AND Time >= '$wmiDate'"
+        }
+
+        Write-Host "[DEBUG] WMI Query: $wmiQuery" -ForegroundColor Gray
+
+        try {
+            $statusMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+                -ComputerName $script:sccmSiteServer `
+                -Query $wmiQuery `
+                -ErrorAction SilentlyContinue
+
+            if ($statusMessages) {
+                Write-Host "[SUCCESS] Retrieved $(@($statusMessages).Count) detailed status messages from WMI" -ForegroundColor Green
+
+                # Group by MachineName and add to existing results
+                $messagesByMachine = $statusMessages | Group-Object -Property MachineName
+
+                foreach ($group in $messagesByMachine) {
+                    $machineName = $group.Name
+                    if ($resultHash.ContainsKey($machineName)) {
+                        # Add detailed messages to existing entry
+                        $resultHash[$machineName].DetailedMessages = $group.Group
+                    }
+                    elseif ($monitoringMachines.ContainsKey($machineName)) {
+                        # Create new entry if machine is in monitoring collection
+                        $resultHash[$machineName] = @{
+                            Messages = @()
+                            Status = "Unknown"
+                            DetailedMessages = $group.Group
+                        }
+                    }
+                }
+
+                Write-Host "[SUCCESS] Added detailed execution messages to $($messagesByMachine.Count) device(s)" -ForegroundColor Green
+            }
+            else {
+                Write-Host "[WARNING] No detailed status messages found in SMS_StatusMessage" -ForegroundColor Yellow
+            }
+        }
+        catch {
+            Write-Host "[ERROR] Failed to query SMS_StatusMessage: $_" -ForegroundColor Red
+            Write-Host "[ERROR] Query was: $wmiQuery" -ForegroundColor Red
+        }
+
+        Write-Host "[SUCCESS] Processed $($resultHash.Count) total devices with TS data" -ForegroundColor Green
         return $resultHash
     }
     catch {
@@ -1172,8 +1230,19 @@ try {
             }
 
             # Save TS execution messages from the collection-wide data
-            if ($allTSData[$computerName].Messages) {
-                $tsMessagesDownloaded = Save-TaskSequenceExecutionLog -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -Messages $allTSData[$computerName].Messages -DestinationDirectory $logsDirectory
+            # Prefer DetailedMessages (from WMI) if available, otherwise use Messages (from cmdlet)
+            $messagesToSave = $null
+            if ($allTSData[$computerName].DetailedMessages) {
+                $messagesToSave = $allTSData[$computerName].DetailedMessages
+                Write-Host "  Using detailed WMI messages (SMS_StatusMessage)" -ForegroundColor Cyan
+            }
+            elseif ($allTSData[$computerName].Messages) {
+                $messagesToSave = $allTSData[$computerName].Messages
+                Write-Host "  Using cmdlet messages (SMS_ClassicDeploymentAssetDetails)" -ForegroundColor Cyan
+            }
+
+            if ($messagesToSave) {
+                $tsMessagesDownloaded = Save-TaskSequenceExecutionLog -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -Messages $messagesToSave -DestinationDirectory $logsDirectory
             }
         }
         else {
