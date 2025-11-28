@@ -3,24 +3,16 @@
     <Settings>
         <!-- SCCM Connection Settings -->
         <SCCM>
-            <SiteCode>ABC</SiteCode>
-            <SiteServer>sccm01.contoso.com</SiteServer>
-            <CollectionID>ABC00123</CollectionID>
-            <TaskSequenceID>ABC00456</TaskSequenceID>
+            <SiteCode>PR1</SiteCode>
+            <SiteServer>wincmps-p001</SiteServer>
+            <CollectionID>PR10077A</CollectionID>
+            <TaskSequenceID>PR100867</TaskSequenceID>
         </SCCM>
 
         <!-- Log Settings -->
         <Logs>
-            <!-- Path to TaskSequenceDeferral.log on client machines -->
+            <!-- Path to TaskSequenceDeferral.log on client machines (accessed via C$ share) -->
             <DeferralLogPath>C:\Windows\ccm\logs\TaskSequenceDeferral.log</DeferralLogPath>
-
-            <!-- Task Sequence log collection settings -->
-            <!-- Mode: "DaysBack" = collect logs from last N days, "FromDate" = collect logs from specific date forward -->
-            <TSLogDateMode>DaysBack</TSLogDateMode>
-            <!-- If mode is DaysBack: number of days to look back from today -->
-            <TSLogLookbackDays>7</TSLogLookbackDays>
-            <!-- If mode is FromDate: start date in yyyy-MM-dd format (only used when mode is FromDate) -->
-            <TSLogStartDate>2025-01-01</TSLogStartDate>
         </Logs>
 
         <!-- Monitoring Settings -->
@@ -31,18 +23,12 @@
             <HostnameVerificationTimeoutSeconds>3</HostnameVerificationTimeoutSeconds>
             <!-- Timeout for ping checks (in milliseconds) -->
             <PingTimeoutMs>1000</PingTimeoutMs>
-
-            <!-- Jumpbox for reaching VPN clients -->
-            <!-- Leave empty to connect directly to clients -->
-            <JumpboxServer>jumpbox.contoso.com</JumpboxServer>
-            <!-- If true, use jumpbox for all client connections; if false, connect directly -->
-            <UseJumpbox>true</UseJumpbox>
         </Monitoring>
 
-        <!-- Web Server Settings (IIS handles the actual web server) -->
+        <!-- Output Directories (Backend Collector) -->
         <WebServer>
-            <!-- Root directory where web files and data will be stored -->
-            <WebRootPath>C:\inetpub\wwwroot\SCCMDeferralMonitor</WebRootPath>
+            <!-- Root directory for output files -->
+            <WebRootPath>C:\SCCMDeferralMonitor</WebRootPath>
             <!-- Directory to store JSON data files (relative to WebRootPath or absolute) -->
             <DataDirectory>Data</DataDirectory>
             <!-- Directory to store collected log files (relative to WebRootPath or absolute) -->
@@ -51,8 +37,8 @@
 
         <!-- Application Metadata -->
         <Application>
-            <Name>SCCM Task Sequence Deferral Monitor</Name>
-            <Version>1.0</Version>
+            <Name>SCCM Task Sequence Deferral Monitor - Backend Collector</Name>
+            <Version>2.0</Version>
             <Vendor>IT Department</Vendor>
         </Application>
     </Settings>
