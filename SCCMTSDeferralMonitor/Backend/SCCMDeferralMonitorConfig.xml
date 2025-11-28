@@ -23,6 +23,8 @@
             <HostnameVerificationTimeoutSeconds>3</HostnameVerificationTimeoutSeconds>
             <!-- Timeout for ping checks (in milliseconds) -->
             <PingTimeoutMs>1000</PingTimeoutMs>
+            <!-- How many days back to retrieve TS execution status messages (0 = all history) -->
+            <TSStatusMessagesDaysBack>30</TSStatusMessagesDaysBack>
         </Monitoring>
 
         <!-- Output Directories (Backend Collector) -->

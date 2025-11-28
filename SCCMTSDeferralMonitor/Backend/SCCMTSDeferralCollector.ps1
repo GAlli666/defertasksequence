@@ -281,23 +281,36 @@ function Get-TaskSequenceDeploymentStatusFromSCCM {
 function Get-AndSaveTaskSequenceStatusMessages {
     <#
     .SYNOPSIS
-        Downloads ALL TS execution status from SCCM for a computer and saves to JSON and HTML files
+        Downloads TS execution status from SCCM for a computer and saves to JSON and HTML files
         Uses simple WQL queries (no JOINs) to get execution history with full ActionOutput
     #>
     param(
         [string]$ComputerName,
         [string]$ResourceID,
         [string]$TaskSequenceID,
-        [string]$DestinationDirectory
+        [string]$DestinationDirectory,
+        [int]$DaysBack = 0
     )
 
     try {
         Write-Host "  Downloading TS execution status from SCCM..." -ForegroundColor Cyan
-        Write-Host "  [DEBUG] Parameters - Computer: $ComputerName, ResourceID: $ResourceID, TSID: $TaskSequenceID" -ForegroundColor Gray
+        Write-Host "  [DEBUG] Parameters - Computer: $ComputerName, ResourceID: $ResourceID, TSID: $TaskSequenceID, DaysBack: $DaysBack" -ForegroundColor Gray
 
-        # Simple WQL query - no INNER JOIN (not supported in WQL)
-        # Query the execution status view directly
+        # Build WQL query with optional date filter
         $query = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID = '$ResourceID' AND PackageID = '$TaskSequenceID'"
+
+        # Add date filter if DaysBack > 0
+        if ($DaysBack -gt 0) {
+            $startDate = (Get-Date).AddDays(-$DaysBack)
+            # Convert to WMI datetime format (yyyymmddHHMMSS.ffffff+UTC)
+            $wmiDate = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($startDate)
+            $query += " AND ExecutionTime >= '$wmiDate'"
+            Write-Host "  [DEBUG] Date filter applied: Last $DaysBack days (since $($startDate.ToString('yyyy-MM-dd')))" -ForegroundColor Gray
+        }
+        else {
+            Write-Host "  [DEBUG] No date filter - retrieving all history" -ForegroundColor Gray
+        }
+
         Write-Host "  [DEBUG] WQL Query: $query" -ForegroundColor Gray
         Write-Host "  [DEBUG] Namespace: ROOT\SMS\site_$($script:sccmSiteCode), Server: $script:sccmSiteServer" -ForegroundColor Gray
 
@@ -845,6 +858,7 @@ try {
     $win11Override = [System.Convert]::ToBoolean($config.Configuration.Settings.Monitoring.Windows11OverrideSuccess)
     $hostnameVerificationTimeout = [int]$config.Configuration.Settings.Monitoring.HostnameVerificationTimeoutSeconds
     $pingTimeout = [int]$config.Configuration.Settings.Monitoring.PingTimeoutMs
+    $tsStatusMessagesDaysBack = [int]$config.Configuration.Settings.Monitoring.TSStatusMessagesDaysBack
 
     # Store site server in script scope
     $script:sccmSiteServer = $siteServer
@@ -969,7 +983,7 @@ try {
         }
 
         # Download and save TS status messages from SCCM
-        $tsMessagesDownloaded = Get-AndSaveTaskSequenceStatusMessages -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -DestinationDirectory $logsDirectory
+        $tsMessagesDownloaded = Get-AndSaveTaskSequenceStatusMessages -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -DestinationDirectory $logsDirectory -DaysBack $tsStatusMessagesDaysBack
 
         # Get deferral log data
         $deferralData = @{
