@@ -1,20 +1,24 @@
 <#
 .SYNOPSIS
-    SCCM Task Sequence Deferral Monitor - Backend Data Collection Script (V2)
+    SCCM Task Sequence Deferral Monitor - Backend Data Collector
 
 .DESCRIPTION
-    Connects to SCCM, collects collection member data via jumpbox if needed,
-    retrieves TS status from SCCM status messages, and generates JSON data files.
+    Connects to SCCM, collects collection member data, retrieves TS execution status,
+    downloads TaskSequenceDeferral.log files, and generates JSON metadata files.
+
+    This is the backend data collection component. Use the WPF viewer to display the data.
 
 .NOTES
     Date: 2025-11-28
     Requires: PowerShell 5.1, ConfigurationManager PowerShell Module, SCCM Admin Rights
 
-    V2 Changes:
-    - Uses SCCM status messages for TS deployment status
-    - Uses SCCM central log repository for TS logs
-    - Supports jumpbox PSSession for VPN client access
-    - Gets collection and TS names from SCCM
+    Features:
+    - SCCM data collection (OS version, primary user, TS status)
+    - Direct ping/WMI hostname verification
+    - C$ share access for log collection
+    - TS execution status from vSMS_TaskSequenceExecutionStatus
+    - Windows 11 override support
+    - Orphaned log cleanup
 #>
 
 [CmdletBinding()]
@@ -640,7 +644,7 @@ try {
     }
 
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "SCCM Deferral Monitor - Data Collection V2" -ForegroundColor Cyan
+    Write-Host "SCCM TS Deferral Monitor - Backend Collector" -ForegroundColor Cyan
     Write-Host "Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
     Write-Host "========================================`n" -ForegroundColor Cyan
 
@@ -691,17 +695,6 @@ try {
     if (-not (Test-Path $logsDirectory)) {
         New-Item -Path $logsDirectory -ItemType Directory -Force | Out-Null
         Write-Host "Created logs directory: $logsDirectory" -ForegroundColor Green
-    }
-
-    # Copy HTML file to web root
-    $sourceHtmlPath = Join-Path $scriptDirectory "SCCMDeferralMonitor.html"
-    $destHtmlPath = Join-Path $webRootPath "index.html"
-
-    if (Test-Path $sourceHtmlPath) {
-        if (-not (Test-Path $destHtmlPath) -or ((Get-Item $sourceHtmlPath).LastWriteTime -gt (Get-Item $destHtmlPath).LastWriteTime)) {
-            Copy-Item $sourceHtmlPath $destHtmlPath -Force
-            Write-Host "HTML file copied to: $destHtmlPath" -ForegroundColor Green
-        }
     }
 
     # Connect to SCCM
