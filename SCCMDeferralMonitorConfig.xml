@@ -31,8 +31,12 @@
         <WebServer>
             <!-- Port for the web interface -->
             <Port>8080</Port>
-            <!-- Directory to store HTML/JSON data -->
-            <DataDirectory>C:\SCCMDeferralMonitor\WebData</DataDirectory>
+            <!-- Root directory for the web server (will be created if doesn't exist) -->
+            <WebRootPath>C:\inetpub\wwwroot\SCCMDeferralMonitor</WebRootPath>
+            <!-- Directory to store JSON data files (relative to WebRootPath or absolute) -->
+            <DataDirectory>Data</DataDirectory>
+            <!-- Directory to store log files (relative to WebRootPath or absolute) -->
+            <LogsDirectory>Logs</LogsDirectory>
         </WebServer>
 
         <!-- Application Metadata -->

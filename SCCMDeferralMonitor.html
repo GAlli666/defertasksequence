@@ -505,10 +505,10 @@
         let metadata = {};
         let currentSort = { column: null, direction: 'asc' };
 
-        // Configuration - Update this path to match your web server setup
-        const DATA_URL = 'devicedata.json';
-        const METADATA_URL = 'metadata.json';
-        const LOG_BASE_PATH = '../Logs/'; // Adjust based on your web server configuration
+        // Configuration - Paths relative to this HTML file
+        const DATA_URL = 'Data/devicedata.json';
+        const METADATA_URL = 'Data/metadata.json';
+        const LOG_BASE_PATH = 'Logs/'; // Relative path to logs directory
 
         // Load data on page load
         window.addEventListener('DOMContentLoaded', () => {

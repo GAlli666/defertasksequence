@@ -523,21 +523,78 @@ try {
     $deferralLogPath = $config.Configuration.Settings.Logs.DeferralLogPath
     $localLogStorage = $config.Configuration.Settings.Logs.LocalLogStoragePath
     $tsLogRetentionDays = [int]$config.Configuration.Settings.Logs.TSLogRetentionDays
-    $dataDirectory = $config.Configuration.Settings.WebServer.DataDirectory
+    $webRootPath = $config.Configuration.Settings.WebServer.WebRootPath
+    $dataDirectoryConfig = $config.Configuration.Settings.WebServer.DataDirectory
+    $logsDirectoryConfig = $config.Configuration.Settings.WebServer.LogsDirectory
     $win11Override = [System.Convert]::ToBoolean($config.Configuration.Settings.Monitoring.Windows11OverrideSuccess)
 
     # Store site server in script scope
     $script:sccmSiteServer = $siteServer
 
+    # Create web root path if it doesn't exist
+    if (-not (Test-Path $webRootPath)) {
+        New-Item -Path $webRootPath -ItemType Directory -Force | Out-Null
+        Write-Host "Created web root directory: $webRootPath" -ForegroundColor Green
+    }
+
+    # Resolve data directory (relative to web root or absolute)
+    if ([System.IO.Path]::IsPathRooted($dataDirectoryConfig)) {
+        $dataDirectory = $dataDirectoryConfig
+    } else {
+        $dataDirectory = Join-Path $webRootPath $dataDirectoryConfig
+    }
+
+    # Resolve logs directory (relative to web root or absolute)
+    if ([System.IO.Path]::IsPathRooted($logsDirectoryConfig)) {
+        $logsDirectory = $logsDirectoryConfig
+    } else {
+        $logsDirectory = Join-Path $webRootPath $logsDirectoryConfig
+    }
+
     # Ensure directories exist
     if (-not (Test-Path $localLogStorage)) {
         New-Item -Path $localLogStorage -ItemType Directory -Force | Out-Null
-        Write-Host "Created log storage directory: $localLogStorage" -ForegroundColor Green
+        Write-Host "Created local log storage directory: $localLogStorage" -ForegroundColor Green
     }
 
     if (-not (Test-Path $dataDirectory)) {
         New-Item -Path $dataDirectory -ItemType Directory -Force | Out-Null
         Write-Host "Created data directory: $dataDirectory" -ForegroundColor Green
+    }
+
+    if (-not (Test-Path $logsDirectory)) {
+        New-Item -Path $logsDirectory -ItemType Directory -Force | Out-Null
+        Write-Host "Created logs directory: $logsDirectory" -ForegroundColor Green
+    }
+
+    # Copy HTML file to web root if it doesn't exist or is outdated
+    $sourceHtmlPath = Join-Path $scriptDirectory "SCCMDeferralMonitor.html"
+    $destHtmlPath = Join-Path $webRootPath "index.html"
+
+    if (Test-Path $sourceHtmlPath) {
+        $shouldCopy = $false
+
+        if (-not (Test-Path $destHtmlPath)) {
+            $shouldCopy = $true
+            Write-Host "HTML file not found in web root, copying..." -ForegroundColor Yellow
+        } else {
+            $sourceFile = Get-Item $sourceHtmlPath
+            $destFile = Get-Item $destHtmlPath
+
+            if ($sourceFile.LastWriteTime -gt $destFile.LastWriteTime) {
+                $shouldCopy = $true
+                Write-Host "HTML file in web root is outdated, updating..." -ForegroundColor Yellow
+            }
+        }
+
+        if ($shouldCopy) {
+            Copy-Item $sourceHtmlPath $destHtmlPath -Force
+            Write-Host "HTML file copied to: $destHtmlPath" -ForegroundColor Green
+        } else {
+            Write-Host "HTML file in web root is up to date" -ForegroundColor Gray
+        }
+    } else {
+        Write-Host "WARNING: Source HTML file not found: $sourceHtmlPath" -ForegroundColor Yellow
     }
 
     # Connect to SCCM
@@ -606,10 +663,10 @@ try {
                 Write-Host "  TS Trigger Success: $($deferralData.TSTriggerSuccess)" -ForegroundColor Gray
 
                 # Copy deferral log
-                Copy-DeferralLog -ComputerName $computerName -SourcePath $deferralLogPath -DestinationDirectory $localLogStorage
+                Copy-DeferralLog -ComputerName $computerName -SourcePath $deferralLogPath -DestinationDirectory $logsDirectory
 
                 # Copy TS logs
-                Get-TSLogsFromMachine -ComputerName $computerName -DestinationDirectory $localLogStorage -DaysToKeep $tsLogRetentionDays
+                Get-TSLogsFromMachine -ComputerName $computerName -DestinationDirectory $logsDirectory -DaysToKeep $tsLogRetentionDays
             }
             else {
                 Write-Host "  Deferral log not available: $($deferralData.ErrorMessage)" -ForegroundColor Yellow
@@ -642,7 +699,7 @@ try {
 
     # Clean up orphaned logs
     Write-Host "Cleaning up orphaned log files..." -ForegroundColor Cyan
-    Remove-OrphanedLogs -LogDirectory $localLogStorage -CurrentMembers $members
+    Remove-OrphanedLogs -LogDirectory $logsDirectory -CurrentMembers $members
 
     # Export data to JSON
     $jsonOutputPath = Join-Path $dataDirectory "devicedata.json"
