@@ -255,9 +255,9 @@ WHERE adv.ResourceID = '$ResourceID' AND adv.AdvertisementID LIKE '%$TaskSequenc
 function Get-AllTaskSequenceDataFromSCCM {
     <#
     .SYNOPSIS
-        Downloads ALL TS data (execution messages AND status) for entire collection at once using ConfigMgr cmdlets
-        Uses Get-CMDeploymentStatusDetails to retrieve everything in one go
-        Returns hashtable with both Messages and Status for each device
+        Downloads ALL TS execution data for entire collection using ONLY WMI (SMS_TaskSequenceExecutionStatus)
+        This WMI class has EVERYTHING: ExecutionTime, Step, ActionName, GroupName, ExitCode, ActionOutput
+        Returns hashtable: ComputerName -> { Messages: [...WMI objects...], Status: "..." }
     #>
     param(
         [array]$CollectionMembers,
@@ -268,195 +268,179 @@ function Get-AllTaskSequenceDataFromSCCM {
     )
 
     try {
-        Write-Host "`nCollecting ALL TS data using ConfigMgr cmdlets..." -ForegroundColor Cyan
-        Write-Host "[INFO] Collection $CollectionID is ONLY for getting list of machines to monitor" -ForegroundColor Cyan
-        Write-Host "[INFO] Getting ALL deployments for TS $TaskSequenceID (from ANY collection)" -ForegroundColor Cyan
-
-        # Get ALL deployments for this task sequence (NOT filtered by collection!)
-        # The CollectionID parameter is ONLY used to get the list of machines to monitor
-        # The TS could be deployed to ANY collection(s), not necessarily the monitoring collection
-        $currentLocation = Get-Location
-        Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
-
-        $deployments = Get-CMTaskSequenceDeployment -TaskSequenceId $TaskSequenceID -ErrorAction SilentlyContinue
-
-        Set-Location $currentLocation
-
-        if (-not $deployments) {
-            Write-Host "[WARNING] No deployments found for TaskSequence $TaskSequenceID" -ForegroundColor Yellow
-            return @{}
-        }
-
-        Write-Host "[SUCCESS] Found $(@($deployments).Count) deployment(s) for this TS across ALL collections" -ForegroundColor Green
-
-        # Collect all status details from all deployments using ConfigMgr cmdlets
-        $allStatusDetails = @()
-
-        foreach ($deployment in $deployments) {
-            Write-Host "[DEBUG] Processing deployment: $($deployment.AdvertisementID)" -ForegroundColor Gray
-
-            try {
-                Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
-
-                # Use ConfigMgr cmdlet to get deployment status
-                $deploymentStatus = Get-CMDeploymentStatus -DeploymentId $deployment.AdvertisementID -ErrorAction SilentlyContinue
-
-                if ($deploymentStatus) {
-                    # Use ConfigMgr cmdlet to get detailed status (this has EVERYTHING)
-                    $statusDetails = $deploymentStatus | Get-CMDeploymentStatusDetails -ErrorAction SilentlyContinue
-
-                    if ($statusDetails) {
-                        # Filter by date if needed - use SummarizationTime property
-                        if ($DaysBack -gt 0) {
-                            $startDate = (Get-Date).AddDays(-$DaysBack)
-                            $statusDetails = $statusDetails | Where-Object {
-                                $_.SummarizationTime -and [datetime]$_.SummarizationTime -ge $startDate
-                            }
-                            Write-Host "[DEBUG] Date filter: Last $DaysBack days (since $($startDate.ToString('yyyy-MM-dd')))" -ForegroundColor Gray
-                        }
-
-                        $allStatusDetails += $statusDetails
-                        Write-Host "[DEBUG] Retrieved $(@($statusDetails).Count) status detail records" -ForegroundColor Gray
-                    }
-                }
-
-                Set-Location $currentLocation
-            }
-            catch {
-                Write-Host "[ERROR] Failed to get status details for deployment $($deployment.AdvertisementID): $_" -ForegroundColor Red
-                Set-Location $currentLocation
-            }
-        }
-
-        if (-not $allStatusDetails -or $allStatusDetails.Count -eq 0) {
-            Write-Host "[WARNING] No TS data found for any deployments" -ForegroundColor Yellow
-            return @{}
-        }
-
-        Write-Host "[SUCCESS] Found $($allStatusDetails.Count) total status detail records across ALL deployments" -ForegroundColor Green
-
-        # Create a set of machine names from our monitoring collection for filtering
-        $monitoringMachines = @{}
-        foreach ($member in $CollectionMembers) {
-            $monitoringMachines[$member.Name] = $true
-        }
-        Write-Host "[DEBUG] Monitoring collection has $($monitoringMachines.Count) machines" -ForegroundColor Gray
-
-        # Filter to only devices in our monitoring collection, then group by DeviceName
-        $filteredDetails = $allStatusDetails | Where-Object { $monitoringMachines.ContainsKey($_.DeviceName) }
-        Write-Host "[DEBUG] Filtered to $($filteredDetails.Count) records for machines in monitoring collection" -ForegroundColor Green
-
-        $messagesByDevice = $filteredDetails | Group-Object -Property DeviceName
-        Write-Host "[DEBUG] Data grouped into $($messagesByDevice.Count) device(s)" -ForegroundColor Gray
-
-        # Create hashtable: DeviceName -> { Messages: [...], Status: "..." }
-        $resultHash = @{}
-        foreach ($group in $messagesByDevice) {
-            if ($group.Name) {
-                # Get the most recent status for this device - use SummarizationTime property
-                $latestRecord = $group.Group | Sort-Object SummarizationTime -Descending | Select-Object -First 1
-
-                # Determine status from StatusDescription
-                $tsStatus = "Unknown"
-                if ($latestRecord.StatusDescription) {
-                    # Map status description to our status values
-                    switch -Wildcard ($latestRecord.StatusDescription) {
-                        "*Success*" { $tsStatus = "Success" }
-                        "*Complete*" { $tsStatus = "Success" }
-                        "*finished successfully*" { $tsStatus = "Success" }
-                        "*Running*" { $tsStatus = "In Progress" }
-                        "*Progress*" { $tsStatus = "In Progress" }
-                        "*reboot*" { $tsStatus = "In Progress" }
-                        "*Failed*" { $tsStatus = "Failed" }
-                        "*Error*" { $tsStatus = "Failed" }
-                        default { $tsStatus = "In Progress" }
-                    }
-                }
-
-                $resultHash[$group.Name] = @{
-                    Messages = $group.Group
-                    Status = $tsStatus
-                }
-            }
-        }
-
-        Write-Host "[SUCCESS] Processed $($resultHash.Count) devices with TS data from cmdlets" -ForegroundColor Green
-
-        # Now get detailed execution messages via WMI (SMS_TaskSequenceExecutionStatus) - collection-wide
-        Write-Host "`n[INFO] Querying SMS_TaskSequenceExecutionStatus WMI class for detailed step execution data..." -ForegroundColor Cyan
+        Write-Host "`n============================================" -ForegroundColor Cyan
+        Write-Host "COLLECTION-WIDE WMI DATA PULL (SMS_TaskSequenceExecutionStatus)" -ForegroundColor Cyan
+        Write-Host "============================================" -ForegroundColor Cyan
+        Write-Host "[INFO] Collection $CollectionID provides list of machines to monitor" -ForegroundColor Cyan
+        Write-Host "[INFO] Querying SMS_TaskSequenceExecutionStatus for TS $TaskSequenceID" -ForegroundColor Cyan
         Write-Host "[INFO] This class has: ExecutionTime, Step, ActionName, GroupName, ExitCode, ActionOutput" -ForegroundColor Cyan
 
         # Build ResourceID list for WMI query
+        Write-Host "`n[DEBUG] Building ResourceID list from $($CollectionMembers.Count) collection members..." -ForegroundColor Yellow
         $resourceIDs = ($CollectionMembers | ForEach-Object { $_.ResourceID }) -join "','"
+        Write-Host "[DEBUG] ResourceID list built: $($CollectionMembers.Count) IDs" -ForegroundColor Gray
+
+        # Build ResourceID to ComputerName mapping for debugging
+        $resourceIDtoName = @{}
+        $nameToResourceID = @{}
+        foreach ($member in $CollectionMembers) {
+            $resourceIDtoName[$member.ResourceID] = $member.Name
+            $nameToResourceID[$member.Name] = $member.ResourceID
+            Write-Host "[DEBUG] Mapping: ResourceID $($member.ResourceID) -> ComputerName $($member.Name)" -ForegroundColor DarkGray
+        }
 
         # Query SMS_TaskSequenceExecutionStatus for TS execution messages
-        # This is the correct class that has ActionOutput!
+        # This is the ONLY data source - it has ActionOutput!
         $wmiQuery = "SELECT * FROM SMS_TaskSequenceExecutionStatus WHERE ResourceID IN ('$resourceIDs') AND PackageID = '$TaskSequenceID'"
 
         if ($DaysBack -gt 0) {
             $startDate = (Get-Date).AddDays(-$DaysBack)
             $wmiDate = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($startDate)
             $wmiQuery += " AND ExecutionTime >= '$wmiDate'"
+            Write-Host "[DEBUG] Date filter: Last $DaysBack days (since $($startDate.ToString('yyyy-MM-dd')))" -ForegroundColor Gray
         }
 
-        Write-Host "[DEBUG] WMI Query: $wmiQuery" -ForegroundColor Gray
+        Write-Host "[DEBUG] WMI Query: $wmiQuery" -ForegroundColor Yellow
 
         try {
             $executionMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
                 -ComputerName $script:sccmSiteServer `
                 -Query $wmiQuery `
-                -ErrorAction SilentlyContinue
+                -ErrorAction Stop
 
-            if ($executionMessages) {
-                Write-Host "[SUCCESS] Retrieved $(@($executionMessages).Count) detailed execution messages from WMI" -ForegroundColor Green
+            if (-not $executionMessages) {
+                Write-Host "[WARNING] No execution messages found in SMS_TaskSequenceExecutionStatus" -ForegroundColor Yellow
+                Write-Host "[WARNING] This could mean:" -ForegroundColor Yellow
+                Write-Host "  - TS has not run on any devices in the collection" -ForegroundColor Yellow
+                Write-Host "  - PackageID '$TaskSequenceID' is incorrect" -ForegroundColor Yellow
+                Write-Host "  - Date filter (DaysBack=$DaysBack) is too restrictive" -ForegroundColor Yellow
+                return @{}
+            }
 
-                # Create ResourceID to ComputerName mapping
-                $resourceIDtoName = @{}
-                foreach ($member in $CollectionMembers) {
-                    $resourceIDtoName[$member.ResourceID] = $member.Name
-                }
+            $messageCount = @($executionMessages).Count
+            Write-Host "[SUCCESS] Retrieved $messageCount detailed execution messages from WMI" -ForegroundColor Green
 
-                # Group by ResourceID and add to existing results
-                $messagesByResource = $executionMessages | Group-Object -Property ResourceID
-
-                foreach ($group in $messagesByResource) {
-                    $resourceID = $group.Name
-                    $computerName = $resourceIDtoName[$resourceID]
-
-                    if ($computerName) {
-                        if ($resultHash.ContainsKey($computerName)) {
-                            # Add detailed messages to existing entry
-                            $resultHash[$computerName].DetailedMessages = $group.Group
-                        }
-                        else {
-                            # Create new entry
-                            $resultHash[$computerName] = @{
-                                Messages = @()
-                                Status = "Unknown"
-                                DetailedMessages = $group.Group
-                            }
-                        }
+            # DEBUG: Show first message properties
+            if ($messageCount -gt 0) {
+                Write-Host "`n[DEBUG] First WMI message object type: $($executionMessages[0].GetType().FullName)" -ForegroundColor Yellow
+                Write-Host "[DEBUG] Sample WMI message properties:" -ForegroundColor Yellow
+                $sampleProps = @('ResourceID', 'PackageID', 'ExecutionTime', 'Step', 'ActionName', 'GroupName', 'LastStatusMsgName', 'ExitCode')
+                foreach ($prop in $sampleProps) {
+                    $value = $executionMessages[0].$prop
+                    if ($value) {
+                        Write-Host "  - $prop = $value" -ForegroundColor Gray
+                    } else {
+                        Write-Host "  - $prop = [NULL]" -ForegroundColor DarkGray
                     }
                 }
 
-                Write-Host "[SUCCESS] Added detailed execution messages to $($messagesByResource.Count) device(s)" -ForegroundColor Green
+                # Check if ActionOutput exists
+                $hasActionOutput = $executionMessages[0].PSObject.Properties.Name -contains 'ActionOutput'
+                if ($hasActionOutput) {
+                    $outputLength = if ($executionMessages[0].ActionOutput) { $executionMessages[0].ActionOutput.Length } else { 0 }
+                    Write-Host "  - ActionOutput length = $outputLength chars" -ForegroundColor $(if ($outputLength -gt 0) { "Green" } else { "Yellow" })
+                } else {
+                    Write-Host "  - ActionOutput property NOT FOUND in WMI object!" -ForegroundColor Red
+                }
             }
-            else {
-                Write-Host "[WARNING] No detailed execution messages found in SMS_TaskSequenceExecutionStatus" -ForegroundColor Yellow
+
+            # Group messages by ResourceID
+            $messagesByResource = $executionMessages | Group-Object -Property ResourceID
+            Write-Host "`n[DEBUG] WMI messages grouped by ResourceID: $($messagesByResource.Count) device(s)" -ForegroundColor Yellow
+
+            # Create result hashtable: ComputerName -> { Messages: [...], Status: "..." }
+            $resultHash = @{}
+
+            foreach ($group in $messagesByResource) {
+                $resourceID = $group.Name
+                $computerName = $resourceIDtoName[$resourceID]
+
+                Write-Host "`n[DEBUG] Processing ResourceID: $resourceID" -ForegroundColor Yellow
+                Write-Host "[DEBUG]   -> Mapped to ComputerName: $computerName" -ForegroundColor $(if ($computerName) { "Green" } else { "Red" })
+                Write-Host "[DEBUG]   -> Message count: $($group.Count)" -ForegroundColor Gray
+
+                if (-not $computerName) {
+                    Write-Host "[WARNING] ResourceID $resourceID not found in collection members! Skipping..." -ForegroundColor Red
+                    continue
+                }
+
+                # Determine status from most recent message
+                # Sort by Step descending to get latest step
+                $sortedMessages = $group.Group | Sort-Object Step -Descending
+                $latestMessage = $sortedMessages | Select-Object -First 1
+
+                $tsStatus = "Unknown"
+                if ($latestMessage.LastStatusMsgName) {
+                    Write-Host "[DEBUG]   -> Latest LastStatusMsgName: $($latestMessage.LastStatusMsgName)" -ForegroundColor Gray
+
+                    # Map status message name to our status values
+                    switch -Wildcard ($latestMessage.LastStatusMsgName) {
+                        "*Success*" { $tsStatus = "Success" }
+                        "*Complete*" { $tsStatus = "Success" }
+                        "*finished*" { $tsStatus = "Success" }
+                        "*Running*" { $tsStatus = "In Progress" }
+                        "*Progress*" { $tsStatus = "In Progress" }
+                        "*reboot*" { $tsStatus = "In Progress" }
+                        "*waiting*" { $tsStatus = "In Progress" }
+                        "*Failed*" { $tsStatus = "Failed" }
+                        "*Error*" { $tsStatus = "Failed" }
+                        default {
+                            # If we have messages but can't determine status, assume In Progress
+                            $tsStatus = "In Progress"
+                        }
+                    }
+                }
+                elseif ($latestMessage.ExitCode -eq 0) {
+                    $tsStatus = "Success"
+                }
+                elseif ($latestMessage.ExitCode -ne $null -and $latestMessage.ExitCode -ne 0) {
+                    $tsStatus = "Failed"
+                }
+                else {
+                    # Have messages but no clear status indicator
+                    $tsStatus = "In Progress"
+                }
+
+                Write-Host "[DEBUG]   -> Derived Status: $tsStatus" -ForegroundColor $(
+                    switch ($tsStatus) {
+                        "Success" { "Green" }
+                        "Failed" { "Red" }
+                        "In Progress" { "Yellow" }
+                        default { "Gray" }
+                    }
+                )
+
+                # Store ALL messages for this device (sorted chronologically by Step)
+                $chronologicalMessages = $group.Group | Sort-Object Step
+
+                $resultHash[$computerName] = @{
+                    Messages = $chronologicalMessages
+                    Status = $tsStatus
+                }
+
+                Write-Host "[DEBUG]   -> Added to result hash with $($chronologicalMessages.Count) messages" -ForegroundColor Green
             }
+
+            Write-Host "`n[SUCCESS] Processed $($resultHash.Count) devices with TS data from WMI" -ForegroundColor Green
+
+            # Summary of devices with data
+            Write-Host "`n[DEBUG] Devices with TS execution data:" -ForegroundColor Yellow
+            foreach ($deviceName in $resultHash.Keys) {
+                Write-Host "  - $deviceName : $($resultHash[$deviceName].Messages.Count) messages, Status=$($resultHash[$deviceName].Status)" -ForegroundColor Gray
+            }
+
+            return $resultHash
         }
         catch {
             Write-Host "[ERROR] Failed to query SMS_TaskSequenceExecutionStatus: $_" -ForegroundColor Red
             Write-Host "[ERROR] Query was: $wmiQuery" -ForegroundColor Red
+            Write-Host "[ERROR] Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
+            return @{}
         }
-
-        Write-Host "[SUCCESS] Processed $($resultHash.Count) total devices with TS data" -ForegroundColor Green
-        return $resultHash
     }
     catch {
         Write-Host "[ERROR] Failed to collect TS data: $_" -ForegroundColor Red
         Write-Host "[ERROR] Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
-        Set-Location $currentLocation -ErrorAction SilentlyContinue
         return @{}
     }
 }
@@ -737,28 +721,82 @@ function Get-DeviceOSInfo {
     )
 
     try {
-        # Query SMS_R_System for detailed OS information including build number
-        $query = "SELECT Build01, Caption0, Version0 FROM SMS_R_System WHERE ResourceID = '$ResourceID'"
+        Write-Host "  [DEBUG-OS] Querying OS info for ResourceID: $ResourceID ($ComputerName)" -ForegroundColor DarkGray
 
-        $system = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+        # Try SMS_G_System_OPERATING_SYSTEM first (hardware inventory - more reliable)
+        $query1 = "SELECT BuildNumber, Caption, Version FROM SMS_G_System_OPERATING_SYSTEM WHERE ResourceID = '$ResourceID'"
+
+        Write-Host "  [DEBUG-OS] Query 1 (SMS_G_System_OPERATING_SYSTEM): $query1" -ForegroundColor DarkGray
+
+        $osData = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
             -ComputerName $script:sccmSiteServer `
-            -Query $query `
+            -Query $query1 `
             -ErrorAction SilentlyContinue
 
-        if ($system) {
-            $build = $system.Build01
-            $version = $system.Version0
+        $build = $null
+        $version = $null
+        $caption = $null
 
-            # Determine OS name ONLY from build number (SCCM Caption0 is unreliable)
-            $osName = "Unknown"
-            $isWindows11 = $false
-            $buildNumber = ""
+        if ($osData) {
+            Write-Host "  [DEBUG-OS] SMS_G_System_OPERATING_SYSTEM returned data" -ForegroundColor Green
+            $build = $osData.BuildNumber  # Property name is BuildNumber (no 01 suffix)
+            $version = $osData.Version
+            $caption = $osData.Caption
 
-            if ($build -and $build -match '10\.0\.(\d+)') {
+            Write-Host "  [DEBUG-OS]   BuildNumber: $build" -ForegroundColor DarkGray
+            Write-Host "  [DEBUG-OS]   Version: $version" -ForegroundColor DarkGray
+            Write-Host "  [DEBUG-OS]   Caption: $caption" -ForegroundColor DarkGray
+        }
+        else {
+            Write-Host "  [DEBUG-OS] SMS_G_System_OPERATING_SYSTEM returned no data, trying SMS_R_System..." -ForegroundColor Yellow
+
+            # Fallback to SMS_R_System (discovery data)
+            $query2 = "SELECT Build01, Caption0, Version0 FROM SMS_R_System WHERE ResourceID = '$ResourceID'"
+
+            Write-Host "  [DEBUG-OS] Query 2 (SMS_R_System): $query2" -ForegroundColor DarkGray
+
+            $system = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+                -ComputerName $script:sccmSiteServer `
+                -Query $query2 `
+                -ErrorAction SilentlyContinue
+
+            if ($system) {
+                Write-Host "  [DEBUG-OS] SMS_R_System returned data" -ForegroundColor Green
+                $build = $system.Build01  # Property has 01 suffix
+                $version = $system.Version0
+                $caption = $system.Caption0
+
+                Write-Host "  [DEBUG-OS]   Build01: $build" -ForegroundColor DarkGray
+                Write-Host "  [DEBUG-OS]   Version0: $version" -ForegroundColor DarkGray
+                Write-Host "  [DEBUG-OS]   Caption0: $caption" -ForegroundColor DarkGray
+            }
+            else {
+                Write-Host "  [DEBUG-OS] SMS_R_System also returned no data" -ForegroundColor Red
+            }
+        }
+
+        # Determine OS name from build number
+        $osName = "Unknown"
+        $isWindows11 = $false
+        $buildNumber = ""
+
+        if ($build) {
+            Write-Host "  [DEBUG-OS] Processing build string: $build" -ForegroundColor DarkGray
+
+            # Build could be in format "10.0.19045" or just "19045"
+            if ($build -match '10\.0\.(\d+)') {
                 $buildNumber = $matches[1]
+            }
+            elseif ($build -match '^(\d+)$') {
+                $buildNumber = $matches[1]
+            }
+
+            Write-Host "  [DEBUG-OS] Extracted build number: $buildNumber" -ForegroundColor DarkGray
+
+            if ($buildNumber) {
                 $buildNum = [int]$buildNumber
 
-                # Determine OS from build number only
+                # Determine OS from build number
                 if ($buildNum -ge 22000) {
                     # Windows 11 version mapping
                     if ($buildNum -ge 26100) {
@@ -821,30 +859,31 @@ function Get-DeviceOSInfo {
                     }
                 }
                 else {
-                    # Older Windows versions
+                    # Older Windows versions or non-standard build
                     $osName = "Windows (Build $buildNumber)"
                 }
-            }
 
-            return @{
-                OSName = $osName
-                Build = $build
-                BuildNumber = $buildNumber
-                Version = $version
-                IsWindows11 = $isWindows11
+                Write-Host "  [DEBUG-OS] Determined OS: $osName (Win11=$isWindows11)" -ForegroundColor Green
             }
+            else {
+                Write-Host "  [DEBUG-OS] Could not extract build number from: $build" -ForegroundColor Red
+            }
+        }
+        else {
+            Write-Host "  [DEBUG-OS] No build data available from SCCM for this device" -ForegroundColor Red
         }
 
         return @{
-            OSName = "Unknown"
-            Build = ""
-            BuildNumber = ""
-            Version = ""
-            IsWindows11 = $false
+            OSName = $osName
+            Build = $build
+            BuildNumber = $buildNumber
+            Version = $version
+            IsWindows11 = $isWindows11
         }
     }
     catch {
         Write-Host "  [ERROR] Failed to get OS info: $_" -ForegroundColor Red
+        Write-Host "  [ERROR] Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
         return @{
             OSName = "Unknown"
             Build = ""
@@ -1217,11 +1256,8 @@ try {
 
     Write-Host "`nProcessing $($members.Count) collection members...`n" -ForegroundColor Cyan
 
-    # Collect ALL TS data (messages AND status) for the collection at once - NO PER-DEVICE QUERIES!
-    # Uses ONLY ConfigMgr cmdlets: Get-CMTaskSequenceDeployment, Get-CMDeploymentStatus, Get-CMDeploymentStatusDetails
-    Write-Host "`n============================================" -ForegroundColor Cyan
-    Write-Host "COLLECTION-WIDE DATA PULL (ConfigMgr Cmdlets Only)" -ForegroundColor Cyan
-    Write-Host "============================================" -ForegroundColor Cyan
+    # Collect ALL TS data (execution messages AND status) for the collection at once - NO PER-DEVICE QUERIES!
+    # Uses ONLY WMI: SMS_TaskSequenceExecutionStatus (has ActionOutput, Step, ActionName, etc.)
     $allTSData = Get-AllTaskSequenceDataFromSCCM -CollectionMembers $members -TaskSequenceID $taskSequenceID -CollectionID $collectionID -DestinationDirectory $logsDirectory -DaysBack $tsStatusMessagesDaysBack
 
     # Process each member
@@ -1270,14 +1306,14 @@ try {
         $isWindows11 = $osInfo.IsWindows11
         Write-Host "  OS: $($osInfo.OSName) (Build: $($osInfo.BuildNumber))" -ForegroundColor Gray
 
-        # Get TS status from the collection-wide data we already pulled - NO MORE WMI QUERIES!
+        # Get TS status from the collection-wide WMI data we already pulled
         $tsStatus = "Unknown"
         $tsMessagesDownloaded = $false
 
         if ($allTSData.ContainsKey($computerName)) {
-            # Extract status from the collection-wide pull
+            # Extract status from the collection-wide WMI pull
             $tsStatus = $allTSData[$computerName].Status
-            Write-Host "  TS Status: $tsStatus (from collection-wide data)" -ForegroundColor Gray
+            Write-Host "  TS Status: $tsStatus (from WMI)" -ForegroundColor Gray
 
             # Apply Windows 11 override
             if ($win11Override -and $isWindows11 -and $tsStatus -ne "Success") {
@@ -1285,24 +1321,18 @@ try {
                 $tsStatus = "Success"
             }
 
-            # Save TS execution messages from the collection-wide data
-            # Prefer DetailedMessages (from WMI) if available, otherwise use Messages (from cmdlet)
-            $messagesToSave = $null
-            if ($allTSData[$computerName].DetailedMessages) {
-                $messagesToSave = $allTSData[$computerName].DetailedMessages
-                Write-Host "  Using detailed WMI messages (SMS_StatusMessage)" -ForegroundColor Cyan
+            # Save TS execution messages from WMI (SMS_TaskSequenceExecutionStatus)
+            # This data has ActionOutput!
+            if ($allTSData[$computerName].Messages -and $allTSData[$computerName].Messages.Count -gt 0) {
+                Write-Host "  Using WMI messages (SMS_TaskSequenceExecutionStatus) - $($allTSData[$computerName].Messages.Count) messages" -ForegroundColor Cyan
+                $tsMessagesDownloaded = Save-TaskSequenceExecutionLog -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -Messages $allTSData[$computerName].Messages -DestinationDirectory $logsDirectory
             }
-            elseif ($allTSData[$computerName].Messages) {
-                $messagesToSave = $allTSData[$computerName].Messages
-                Write-Host "  Using cmdlet messages (SMS_ClassicDeploymentAssetDetails)" -ForegroundColor Cyan
-            }
-
-            if ($messagesToSave) {
-                $tsMessagesDownloaded = Save-TaskSequenceExecutionLog -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -Messages $messagesToSave -DestinationDirectory $logsDirectory
+            else {
+                Write-Host "  No WMI messages found for this device" -ForegroundColor Yellow
             }
         }
         else {
-            Write-Host "  No TS data found in collection-wide pull" -ForegroundColor Gray
+            Write-Host "  No TS data found in collection-wide WMI pull" -ForegroundColor Gray
 
             # Apply Windows 11 override even if no data
             if ($win11Override -and $isWindows11) {
