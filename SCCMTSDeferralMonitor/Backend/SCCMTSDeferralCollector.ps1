@@ -241,8 +241,8 @@ function Get-TaskSequenceDeploymentStatusFromSCCM {
 function Get-AndSaveTaskSequenceStatusMessages {
     <#
     .SYNOPSIS
-        Downloads ALL TS execution status from SCCM for a computer and saves to file
-        Uses simple WQL queries (no JOINs) to get execution history
+        Downloads ALL TS execution status from SCCM for a computer and saves to JSON and HTML files
+        Uses simple WQL queries (no JOINs) to get execution history with full ActionOutput
     #>
     param(
         [string]$ComputerName,
@@ -264,40 +264,175 @@ function Get-AndSaveTaskSequenceStatusMessages {
             -ErrorAction SilentlyContinue
 
         if ($messages -and $messages.Count -gt 0) {
-            # Convert to structured format
-            $messageList = @()
+            # Convert to structured format with full details
+            $executionSteps = @()
 
             foreach ($msg in $messages) {
-                # Get detailed status message
+                # Get detailed status message if available
                 $statusMsgQuery = "SELECT * FROM SMS_StatusMessage WHERE RecordID = '$($msg.StatusMessageID)'"
                 $statusMsg = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
                     -ComputerName $script:sccmSiteServer `
                     -Query $statusMsgQuery `
                     -ErrorAction SilentlyContinue
 
-                $messageList += [PSCustomObject]@{
-                    ExecutionTime = if ($msg.ExecutionTime) {
-                        try { [System.Management.ManagementDateTimeConverter]::ToDateTime($msg.ExecutionTime) }
-                        catch { $msg.ExecutionTime }
-                    } else { $null }
-                    Step = $msg.Step
-                    ActionName = $msg.ActionName
+                # Format execution time
+                $executionTime = if ($msg.ExecutionTime) {
+                    try {
+                        [System.Management.ManagementDateTimeConverter]::ToDateTime($msg.ExecutionTime).ToString("yyyy-MM-dd HH:mm:ss")
+                    }
+                    catch { $msg.ExecutionTime }
+                } else { "" }
+
+                $executionSteps += [PSCustomObject]@{
+                    ComputerName = $ComputerName
+                    ExecutionTime = $executionTime
+                    Step = if ($msg.Step) { $msg.Step } else { 0 }
+                    ActionName = if ($msg.ActionName) { $msg.ActionName } else { "" }
                     GroupName = if ($msg.GroupName) { $msg.GroupName } else { "" }
-                    StatusMessage = if ($statusMsg) { $statusMsg.MessageID } else { "" }
-                    ExitCode = $msg.ExitCode
-                    LastStatusMessageName = $msg.LastStatusMessageName
-                    ActionOutput = if ($msg.ActionOutput) { $msg.ActionOutput.SubString(0, [Math]::Min(500, $msg.ActionOutput.Length)) } else { "" }
+                    LastStatusMsgName = if ($msg.LastStatusMessageName) { $msg.LastStatusMessageName } else { "" }
+                    StatusMessageID = if ($statusMsg) { $statusMsg.MessageID } else { "" }
+                    ExitCode = if ($null -ne $msg.ExitCode) { $msg.ExitCode } else { "" }
+                    ActionOutput = if ($msg.ActionOutput) { $msg.ActionOutput } else { "" }  # Full output, no truncation
                 }
             }
 
-            # Sort by execution time descending
-            $messageList = $messageList | Sort-Object ExecutionTime -Descending
+            # Sort by step number ascending (chronological order)
+            $executionSteps = $executionSteps | Sort-Object Step
 
             # Save to JSON file
-            $destFile = Join-Path $DestinationDirectory "$ComputerName`_TSStatusMessages.json"
-            $messageList | ConvertTo-Json -Depth 5 | Out-File -FilePath $destFile -Encoding utf8 -Force
+            $jsonFile = Join-Path $DestinationDirectory "$ComputerName`_TSStatusMessages.json"
+            $executionSteps | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonFile -Encoding utf8 -Force
 
-            Write-Host "  Saved $($messageList.Count) TS execution steps to file" -ForegroundColor Green
+            # Create HTML log file
+            $htmlFile = Join-Path $DestinationDirectory "$ComputerName`_TSExecutionLog.html"
+
+            $htmlContent = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>TS Execution Log - $ComputerName</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+        .action-output {
+            background-color: #f8f9fa;
+            padding: 15px;
+            margin: 10px 0;
+            border-left: 4px solid #3498db;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-width: 100%;
+            overflow-x: auto;
+        }
+        .step-row {
+            font-weight: 600;
+        }
+        .success {
+            color: #27ae60;
+        }
+        .failed {
+            color: #e74c3c;
+        }
+        .info {
+            color: #95a5a6;
+            font-size: 11px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Task Sequence Execution Log</h1>
+    <div class="info">
+        <p><strong>Computer:</strong> $ComputerName</p>
+        <p><strong>Task Sequence ID:</strong> $TaskSequenceID</p>
+        <p><strong>Generated:</strong> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</p>
+        <p><strong>Total Steps:</strong> $($executionSteps.Count)</p>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Step</th>
+                <th>Execution Time</th>
+                <th>Action Name</th>
+                <th>Group Name</th>
+                <th>Status Message</th>
+                <th>Exit Code</th>
+            </tr>
+        </thead>
+        <tbody>
+"@
+
+            foreach ($step in $executionSteps) {
+                $exitCodeClass = if ($step.ExitCode -eq 0) { "success" } elseif ($step.ExitCode -ne "") { "failed" } else { "" }
+
+                $htmlContent += @"
+            <tr>
+                <td class="step-row">$($step.Step)</td>
+                <td>$($step.ExecutionTime)</td>
+                <td>$($step.ActionName)</td>
+                <td>$($step.GroupName)</td>
+                <td>$($step.LastStatusMsgName)</td>
+                <td class="$exitCodeClass">$($step.ExitCode)</td>
+            </tr>
+"@
+
+                if (-not [string]::IsNullOrWhiteSpace($step.ActionOutput)) {
+                    # Escape HTML characters in output
+                    $escapedOutput = [System.Web.HttpUtility]::HtmlEncode($step.ActionOutput)
+                    $htmlContent += @"
+            <tr>
+                <td colspan="6">
+                    <strong>Action Output:</strong>
+                    <div class="action-output">$escapedOutput</div>
+                </td>
+            </tr>
+"@
+                }
+            }
+
+            $htmlContent += @"
+        </tbody>
+    </table>
+</body>
+</html>
+"@
+
+            $htmlContent | Out-File -FilePath $htmlFile -Encoding utf8 -Force
+
+            Write-Host "  Saved $($executionSteps.Count) TS execution steps (JSON + HTML)" -ForegroundColor Green
             return $true
         }
         else {
