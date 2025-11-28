@@ -522,13 +522,8 @@ function Save-TaskSequenceExecutionLog {
 
             $htmlContent | Out-File -FilePath $htmlFile -Encoding utf8 -Force
 
-            Write-Host "  Saved $($executionSteps.Count) TS execution steps (JSON + HTML)" -ForegroundColor Green
-            return $true
-        }
-        else {
-            Write-Host "  No TS execution data could be retrieved" -ForegroundColor Yellow
-            return $false
-        }
+        Write-Host "  Saved $($executionSteps.Count) TS execution steps (JSON + HTML)" -ForegroundColor Green
+        return $true
     }
     catch {
         Write-Host "  [ERROR] Failed to get TS execution status: $_" -ForegroundColor Red
