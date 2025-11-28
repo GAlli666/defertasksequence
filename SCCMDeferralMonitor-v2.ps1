@@ -240,6 +240,81 @@ ORDER BY stat.Time DESC
     }
 }
 
+function Get-AndSaveTaskSequenceStatusMessages {
+    <#
+    .SYNOPSIS
+        Downloads ALL TS status messages from SCCM for a computer and saves to file
+    #>
+    param(
+        [string]$ComputerName,
+        [string]$ResourceID,
+        [string]$TaskSequenceID,
+        [string]$DestinationDirectory
+    )
+
+    try {
+        Write-Host "  Downloading TS status messages from SCCM..." -ForegroundColor Cyan
+
+        # Query ALL status messages for this resource and TS
+        $query = @"
+SELECT stat.Time, stat.MachineName, stat.MessageID, stat.MessageType, stat.Severity,
+       stat.MessageState, stat.Component, stat.InsString1, stat.InsString2, stat.InsString3,
+       stat.InsString4, stat.InsString5, stat.InsString6, stat.InsString7, stat.InsString8,
+       stat.InsString9, stat.InsString10
+FROM v_StatusMessage stat
+INNER JOIN v_TaskExecutionStatus tes ON stat.RecordID = tes.StatusMessageID
+WHERE tes.ResourceID = '$ResourceID'
+  AND tes.PackageID = '$TaskSequenceID'
+ORDER BY stat.Time DESC
+"@
+
+        $messages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+            -ComputerName $script:sccmSiteServer `
+            -Query $query `
+            -ErrorAction Stop
+
+        if ($messages -and $messages.Count -gt 0) {
+            # Convert to structured format
+            $messageList = @()
+
+            foreach ($msg in $messages) {
+                $messageList += [PSCustomObject]@{
+                    Time = if ($msg.Time) { [System.Management.ManagementDateTimeConverter]::ToDateTime($msg.Time) } else { $null }
+                    MachineName = $msg.MachineName
+                    MessageID = $msg.MessageID
+                    MessageType = $msg.MessageType
+                    Severity = switch ($msg.Severity) {
+                        0 { "Info" }
+                        1 { "Warning" }
+                        2 { "Error" }
+                        default { "Unknown" }
+                    }
+                    State = $msg.MessageState
+                    Component = $msg.Component
+                    Details = @($msg.InsString1, $msg.InsString2, $msg.InsString3, $msg.InsString4,
+                                $msg.InsString5, $msg.InsString6, $msg.InsString7, $msg.InsString8,
+                                $msg.InsString9, $msg.InsString10) | Where-Object { -not [string]::IsNullOrEmpty($_) }
+                }
+            }
+
+            # Save to JSON file
+            $destFile = Join-Path $DestinationDirectory "$ComputerName`_TSStatusMessages.json"
+            $messageList | ConvertTo-Json -Depth 5 | Out-File -FilePath $destFile -Encoding utf8 -Force
+
+            Write-Host "  Saved $($messages.Count) TS status messages to file" -ForegroundColor Green
+            return $true
+        }
+        else {
+            Write-Host "  No TS status messages found in SCCM" -ForegroundColor Yellow
+            return $false
+        }
+    }
+    catch {
+        Write-Host "  Failed to get TS status messages: $_" -ForegroundColor Red
+        return $false
+    }
+}
+
 function Get-DevicePrimaryUser {
     param([string]$ComputerName)
 
@@ -280,7 +355,8 @@ function Get-DeviceOSVersion {
         Set-Location $currentLocation
 
         if ($device -and $device.OSVersion) {
-            if ($device.OSVersion -match '10\.0\.22') {
+            # Windows 11 builds: 22000, 22621, 26100, etc. (all 10.0.2xxxx and above)
+            if ($device.OSVersion -match '10\.0\.(2[2-9]\d{3}|[3-9]\d{4})') {
                 return "Windows 11"
             }
             return $device.OSVersion
@@ -377,8 +453,9 @@ function Confirm-ComputerIdentityViaJumpbox {
     }
 
     try {
+        # Use simple Get-WmiObject from jumpbox
         $result = Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
-            param($expected, $timeout)
+            param($computerName, $timeout)
 
             $verifyResult = @{
                 IsValid = $false
@@ -387,32 +464,22 @@ function Confirm-ComputerIdentityViaJumpbox {
             }
 
             try {
-                $connectionOptions = New-Object System.Management.ConnectionOptions
-                $connectionOptions.Timeout = New-TimeSpan -Seconds $timeout
+                # Simple WMI query with timeout
+                $wmiTimeout = $timeout * 1000  # Convert to milliseconds
+                $computerSystem = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $computerName -ErrorAction Stop -AsJob | Wait-Job -Timeout $timeout | Receive-Job
 
-                $scope = New-Object System.Management.ManagementScope("\\$expected\root\cimv2", $connectionOptions)
-                $scope.Connect()
+                if ($computerSystem) {
+                    $verifyResult.ActualName = $computerSystem.Name
 
-                $query = New-Object System.Management.ObjectQuery("SELECT Name FROM Win32_ComputerSystem")
-                $searcher = New-Object System.Management.ManagementObjectSearcher($scope, $query)
-
-                $computers = $searcher.Get()
-
-                foreach ($computer in $computers) {
-                    $verifyResult.ActualName = $computer["Name"]
-
-                    if ($verifyResult.ActualName -eq $expected) {
+                    if ($verifyResult.ActualName -eq $computerName) {
                         $verifyResult.IsValid = $true
                     }
                     else {
-                        $verifyResult.ErrorMessage = "Hostname mismatch: Expected '$expected', got '$($verifyResult.ActualName)'"
+                        $verifyResult.ErrorMessage = "Hostname mismatch: Expected '$computerName', got '$($verifyResult.ActualName)'"
                     }
-
-                    break
                 }
-
-                if ([string]::IsNullOrEmpty($verifyResult.ActualName) -or $verifyResult.ActualName -eq "Unknown") {
-                    $verifyResult.ErrorMessage = "Could not retrieve hostname via WMI"
+                else {
+                    $verifyResult.ErrorMessage = "WMI query returned null"
                 }
             }
             catch {
@@ -568,26 +635,61 @@ function Copy-DeferralLogViaJumpbox {
     }
 
     try {
-        # Copy from client to jumpbox temp location
+        # Copy from client to jumpbox temp location using C$ share
         $tempPath = Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
             param($computer, $sourcePath)
 
-            $uncPath = "\\$computer\$($sourcePath.Replace(':', '$'))"
+            # Build UNC path using C$ admin share
+            # Example: \\COMPUTER\C$\Windows\ccm\logs\TaskSequenceDeferral.log
+            $uncPath = "\\$computer\" + $sourcePath.Replace(':', '$')
+
+            Write-Verbose "Attempting to access: $uncPath"
 
             if (-not (Test-Path $uncPath)) {
+                Write-Warning "Log file not found: $uncPath"
                 return $null
             }
 
+            # Check if we need to update (compare with existing temp file)
             $tempFile = "$env:TEMP\$computer`_TaskSequenceDeferral.log"
+
+            # Always copy to get latest version
             Copy-Item $uncPath $tempFile -Force -ErrorAction Stop
+            Write-Verbose "Copied to temp: $tempFile"
 
             return $tempFile
-        } -ArgumentList $ComputerName, $SourcePath
+        } -ArgumentList $ComputerName, $SourcePath -Verbose
 
         if ($tempPath) {
-            # Copy from jumpbox to local
+            # Copy from jumpbox temp to local destination
             $destFile = Join-Path $DestinationDirectory "$ComputerName`_TaskSequenceDeferral.log"
-            Copy-Item -FromSession $script:jumpboxSession -Path $tempPath -Destination $destFile -Force
+
+            # Only copy if destination doesn't exist or source is newer
+            $shouldCopy = $false
+            if (-not (Test-Path $destFile)) {
+                $shouldCopy = $true
+            }
+            else {
+                # Get file times from jumpbox
+                $sourceTime = Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
+                    param($path)
+                    (Get-Item $path).LastWriteTime
+                } -ArgumentList $tempPath
+
+                $destTime = (Get-Item $destFile).LastWriteTime
+
+                if ($sourceTime -gt $destTime) {
+                    $shouldCopy = $true
+                }
+            }
+
+            if ($shouldCopy) {
+                Copy-Item -FromSession $script:jumpboxSession -Path $tempPath -Destination $destFile -Force
+                Write-Host "  Copied deferral log from $ComputerName" -ForegroundColor Green
+            }
+            else {
+                Write-Host "  Deferral log already up to date for $ComputerName" -ForegroundColor Gray
+            }
 
             # Clean up temp file on jumpbox
             Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
@@ -595,14 +697,14 @@ function Copy-DeferralLogViaJumpbox {
                 Remove-Item $temp -Force -ErrorAction SilentlyContinue
             } -ArgumentList $tempPath
 
-            Write-Host "Copied deferral log from $ComputerName via jumpbox" -ForegroundColor Green
             return $true
         }
 
+        Write-Host "  No deferral log found for $ComputerName" -ForegroundColor Yellow
         return $false
     }
     catch {
-        Write-Host "Failed to copy deferral log via jumpbox: $_" -ForegroundColor Yellow
+        Write-Host "  Failed to copy deferral log from ${ComputerName}: $_" -ForegroundColor Red
         return $false
     }
 }
@@ -666,6 +768,16 @@ function Remove-OrphanedLogs {
             if ($computerName -notin $memberNames) {
                 Remove-Item $log.FullName -Force -ErrorAction SilentlyContinue
                 Write-Host "Removed orphaned deferral log: $($log.Name)" -ForegroundColor Yellow
+            }
+        }
+
+        # Clean up TS status message JSON files
+        $tsStatusFiles = Get-ChildItem -Path $LogDirectory -Filter "*_TSStatusMessages.json" -ErrorAction SilentlyContinue
+        foreach ($file in $tsStatusFiles) {
+            $computerName = $file.Name -replace '_TSStatusMessages\.json$', ''
+            if ($computerName -notin $memberNames) {
+                Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+                Write-Host "Removed orphaned TS status messages: $($file.Name)" -ForegroundColor Yellow
             }
         }
     }
@@ -869,6 +981,9 @@ try {
             Write-Host "  TS Status: $tsStatus" -ForegroundColor Gray
         }
 
+        # Download and save TS status messages from SCCM
+        $tsMessagesDownloaded = Get-AndSaveTaskSequenceStatusMessages -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -DestinationDirectory $logsDirectory
+
         # Get deferral log data
         $deferralData = @{
             DeferralCount = "N/A"
@@ -912,6 +1027,8 @@ try {
             LastDeferralDate = if ($deferralData.LogAvailable) { $deferralData.LastDeferralDate } else { "N/A" }
             LastTriggerDate = if ($deferralData.LogAvailable) { $deferralData.LastTriggerDate } else { "N/A" }
             DeferralLogPath = "$computerName`_TaskSequenceDeferral.log"
+            TSStatusMessagesPath = if ($tsMessagesDownloaded) { "$computerName`_TSStatusMessages.json" } else { "" }
+            TSStatusMessagesAvailable = $tsMessagesDownloaded
             LastUpdated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         }
 
