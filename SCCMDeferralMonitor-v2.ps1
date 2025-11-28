@@ -240,6 +240,81 @@ ORDER BY stat.Time DESC
     }
 }
 
+function Get-AndSaveTaskSequenceStatusMessages {
+    <#
+    .SYNOPSIS
+        Downloads ALL TS status messages from SCCM for a computer and saves to file
+    #>
+    param(
+        [string]$ComputerName,
+        [string]$ResourceID,
+        [string]$TaskSequenceID,
+        [string]$DestinationDirectory
+    )
+
+    try {
+        Write-Host "  Downloading TS status messages from SCCM..." -ForegroundColor Cyan
+
+        # Query ALL status messages for this resource and TS
+        $query = @"
+SELECT stat.Time, stat.MachineName, stat.MessageID, stat.MessageType, stat.Severity,
+       stat.MessageState, stat.Component, stat.InsString1, stat.InsString2, stat.InsString3,
+       stat.InsString4, stat.InsString5, stat.InsString6, stat.InsString7, stat.InsString8,
+       stat.InsString9, stat.InsString10
+FROM v_StatusMessage stat
+INNER JOIN v_TaskExecutionStatus tes ON stat.RecordID = tes.StatusMessageID
+WHERE tes.ResourceID = '$ResourceID'
+  AND tes.PackageID = '$TaskSequenceID'
+ORDER BY stat.Time DESC
+"@
+
+        $messages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+            -ComputerName $script:sccmSiteServer `
+            -Query $query `
+            -ErrorAction Stop
+
+        if ($messages -and $messages.Count -gt 0) {
+            # Convert to structured format
+            $messageList = @()
+
+            foreach ($msg in $messages) {
+                $messageList += [PSCustomObject]@{
+                    Time = if ($msg.Time) { [System.Management.ManagementDateTimeConverter]::ToDateTime($msg.Time) } else { $null }
+                    MachineName = $msg.MachineName
+                    MessageID = $msg.MessageID
+                    MessageType = $msg.MessageType
+                    Severity = switch ($msg.Severity) {
+                        0 { "Info" }
+                        1 { "Warning" }
+                        2 { "Error" }
+                        default { "Unknown" }
+                    }
+                    State = $msg.MessageState
+                    Component = $msg.Component
+                    Details = @($msg.InsString1, $msg.InsString2, $msg.InsString3, $msg.InsString4,
+                                $msg.InsString5, $msg.InsString6, $msg.InsString7, $msg.InsString8,
+                                $msg.InsString9, $msg.InsString10) | Where-Object { -not [string]::IsNullOrEmpty($_) }
+                }
+            }
+
+            # Save to JSON file
+            $destFile = Join-Path $DestinationDirectory "$ComputerName`_TSStatusMessages.json"
+            $messageList | ConvertTo-Json -Depth 5 | Out-File -FilePath $destFile -Encoding utf8 -Force
+
+            Write-Host "  Saved $($messages.Count) TS status messages to file" -ForegroundColor Green
+            return $true
+        }
+        else {
+            Write-Host "  No TS status messages found in SCCM" -ForegroundColor Yellow
+            return $false
+        }
+    }
+    catch {
+        Write-Host "  Failed to get TS status messages: $_" -ForegroundColor Red
+        return $false
+    }
+}
+
 function Get-DevicePrimaryUser {
     param([string]$ComputerName)
 
@@ -280,7 +355,8 @@ function Get-DeviceOSVersion {
         Set-Location $currentLocation
 
         if ($device -and $device.OSVersion) {
-            if ($device.OSVersion -match '10\.0\.22') {
+            # Windows 11 builds: 22000, 22621, 26100, etc. (all 10.0.2xxxx and above)
+            if ($device.OSVersion -match '10\.0\.(2[2-9]\d{3}|[3-9]\d{4})') {
                 return "Windows 11"
             }
             return $device.OSVersion
@@ -694,6 +770,16 @@ function Remove-OrphanedLogs {
                 Write-Host "Removed orphaned deferral log: $($log.Name)" -ForegroundColor Yellow
             }
         }
+
+        # Clean up TS status message JSON files
+        $tsStatusFiles = Get-ChildItem -Path $LogDirectory -Filter "*_TSStatusMessages.json" -ErrorAction SilentlyContinue
+        foreach ($file in $tsStatusFiles) {
+            $computerName = $file.Name -replace '_TSStatusMessages\.json$', ''
+            if ($computerName -notin $memberNames) {
+                Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+                Write-Host "Removed orphaned TS status messages: $($file.Name)" -ForegroundColor Yellow
+            }
+        }
     }
     catch {
         Write-Host "Error during orphaned log cleanup: $_" -ForegroundColor Red
@@ -895,6 +981,9 @@ try {
             Write-Host "  TS Status: $tsStatus" -ForegroundColor Gray
         }
 
+        # Download and save TS status messages from SCCM
+        $tsMessagesDownloaded = Get-AndSaveTaskSequenceStatusMessages -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -DestinationDirectory $logsDirectory
+
         # Get deferral log data
         $deferralData = @{
             DeferralCount = "N/A"
@@ -938,6 +1027,8 @@ try {
             LastDeferralDate = if ($deferralData.LogAvailable) { $deferralData.LastDeferralDate } else { "N/A" }
             LastTriggerDate = if ($deferralData.LogAvailable) { $deferralData.LastTriggerDate } else { "N/A" }
             DeferralLogPath = "$computerName`_TaskSequenceDeferral.log"
+            TSStatusMessagesPath = if ($tsMessagesDownloaded) { "$computerName`_TSStatusMessages.json" } else { "" }
+            TSStatusMessagesAvailable = $tsMessagesDownloaded
             LastUpdated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         }
 

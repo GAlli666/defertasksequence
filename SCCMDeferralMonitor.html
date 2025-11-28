@@ -689,8 +689,8 @@
                     }
                 }
 
-                // Action buttons - disable if verification failed
-                const tsLogsDisabled = !device.LogAvailable || !device.IsOnline || !device.HostnameVerified ? 'disabled' : '';
+                // Action buttons - disable based on availability
+                const tsStatusDisabled = !device.TSStatusMessagesAvailable ? 'disabled' : '';
                 const deferralLogsDisabled = !device.LogAvailable || !device.IsOnline || !device.HostnameVerified ? 'disabled' : '';
 
                 row.innerHTML = `
@@ -706,7 +706,7 @@
                     <td>${triggerSuccessHtml}</td>
                     <td>
                         <div class="btn-group">
-                            <button class="btn btn-primary" onclick="viewTSLogs('${device.TSLogsPath}')" ${tsLogsDisabled}>TS Logs</button>
+                            <button class="btn btn-primary" onclick="viewTSStatusMessages('${device.TSStatusMessagesPath}')" ${tsStatusDisabled}>TS Status</button>
                             <button class="btn btn-secondary" onclick="viewDeferralLog('${device.DeferralLogPath}')" ${deferralLogsDisabled}>Deferral Log</button>
                         </div>
                     </td>
@@ -768,13 +768,14 @@
             filterAndRenderTable();
         }
 
-        // View TS logs (opens directory listing or downloads zip)
-        function viewTSLogs(path) {
-            // In a real implementation, this would open a file browser or download a zip
-            // For now, just alert the path
-            alert('TS Logs location: ' + LOG_BASE_PATH + path + '\n\nConfigure your web server to serve this directory.');
-            // Uncomment below to open in new window (requires web server configuration)
-            // window.open(LOG_BASE_PATH + path, '_blank');
+        // View TS status messages JSON file
+        function viewTSStatusMessages(path) {
+            if (path && path !== '') {
+                // Open JSON file in new window
+                window.open(LOG_BASE_PATH + path, '_blank');
+            } else {
+                alert('No TS status messages available for this device.');
+            }
         }
 
         // View deferral log
