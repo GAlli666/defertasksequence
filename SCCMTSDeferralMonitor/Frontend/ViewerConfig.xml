@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ViewerConfiguration>
+    <Paths>
+        <!-- Path to Data directory containing JSON files -->
+        <DataPath>C:\SCCMDeferralMonitor\Data</DataPath>
+        <!-- Path to Logs directory containing log files -->
+        <LogsPath>C:\SCCMDeferralMonitor\Logs</LogsPath>
+    </Paths>
+</ViewerConfiguration>

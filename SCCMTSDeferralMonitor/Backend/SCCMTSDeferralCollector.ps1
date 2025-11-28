@@ -193,46 +193,40 @@ function Get-CollectionMembers {
 function Get-TaskSequenceDeploymentStatusFromSCCM {
     param(
         [string]$ResourceID,
-        [string]$TaskSequenceID
+        [string]$TaskSequenceID,
+        [string]$ComputerName
     )
 
     try {
         $currentLocation = Get-Location
         Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
 
-        # Query status messages for this computer and TS
-        $query = @"
-SELECT stat.RecordID, stat.MachineName, stat.MessageID, stat.Severity, stat.Time,
-       stat.MessageState, stat.TopLevelSiteCode
-FROM v_StatMsg stat
-WHERE stat.RecordID IN (
-    SELECT RecordID FROM v_TaskExecutionStatus
-    WHERE ResourceID = '$ResourceID'
-    AND PackageID = '$TaskSequenceID'
-)
-ORDER BY stat.Time DESC
-"@
+        # Use cmdlet to get deployment status for this specific TS and computer
+        $deployments = Get-CMDeployment -SoftwareName (Get-CMTaskSequence -TaskSequencePackageId $TaskSequenceID).Name -ErrorAction SilentlyContinue
 
-        $statusMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
-            -ComputerName $script:sccmSiteServer `
-            -Query $query `
-            -ErrorAction SilentlyContinue
+        if ($deployments) {
+            foreach ($deployment in $deployments) {
+                # Get deployment status for this specific computer
+                $status = Get-CMDeploymentStatus -DeploymentId $deployment.DeploymentID -ErrorAction SilentlyContinue |
+                    Where-Object { $_.DeviceName -eq $ComputerName }
 
-        Set-Location $currentLocation
+                if ($status) {
+                    Set-Location $currentLocation
 
-        if ($statusMessages -and $statusMessages.Count -gt 0) {
-            # Get most recent message
-            $latestMessage = $statusMessages[0]
-
-            # Determine status based on message
-            switch ($latestMessage.MessageState) {
-                1 { return "Success" }
-                2 { return "In Progress" }
-                3 { return "Failed" }
-                default { return "Unknown" }
+                    # Map status to our values
+                    switch ($status.StatusType) {
+                        1 { return "Success" }
+                        2 { return "In Progress" }
+                        3 { return "Requirements Not Met" }
+                        4 { return "Unknown" }
+                        5 { return "Failed" }
+                        default { return "Unknown" }
+                    }
+                }
             }
         }
 
+        Set-Location $currentLocation
         return "Not Started"
     }
     catch {
@@ -247,7 +241,8 @@ ORDER BY stat.Time DESC
 function Get-AndSaveTaskSequenceStatusMessages {
     <#
     .SYNOPSIS
-        Downloads ALL TS execution status from SCCM for a computer and saves to file
+        Downloads ALL TS execution status from SCCM for a computer and saves to JSON and HTML files
+        Uses simple WQL queries (no JOINs) to get execution history with full ActionOutput
     #>
     param(
         [string]$ComputerName,
@@ -259,43 +254,185 @@ function Get-AndSaveTaskSequenceStatusMessages {
     try {
         Write-Host "  Downloading TS execution status from SCCM..." -ForegroundColor Cyan
 
-        # Query TS execution status for this resource and TS package
-        $query = @"
-SELECT tes.ExecutionTime, tes.Step, tes.ActionName, tes.GroupName,
-       tes.LastStatusMsgName, tes.ExitCode, tes.ActionOutput
-FROM vSMS_TaskSequenceExecutionStatus tes
-INNER JOIN v_TaskSequencePackage tsp ON tes.PackageID = tsp.PackageID
-WHERE tes.ResourceID = '$ResourceID'
-  AND tes.PackageID = '$TaskSequenceID'
-ORDER BY tes.ExecutionTime DESC
-"@
+        # Simple WQL query - no INNER JOIN (not supported in WQL)
+        # Query the execution status view directly
+        $query = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID = '$ResourceID' AND PackageID = '$TaskSequenceID'"
 
         $messages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
             -ComputerName $script:sccmSiteServer `
             -Query $query `
-            -ErrorAction Stop
+            -ErrorAction SilentlyContinue
 
         if ($messages -and $messages.Count -gt 0) {
-            # Convert to structured format
-            $messageList = @()
+            # Convert to structured format with full details
+            $executionSteps = @()
 
             foreach ($msg in $messages) {
-                $messageList += [PSCustomObject]@{
-                    ExecutionTime = if ($msg.ExecutionTime) { [System.Management.ManagementDateTimeConverter]::ToDateTime($msg.ExecutionTime) } else { $null }
-                    Step = $msg.Step
-                    ActionName = $msg.ActionName
-                    GroupName = $msg.GroupName
-                    StatusMessage = $msg.LastStatusMsgName
-                    ExitCode = $msg.ExitCode
-                    ActionOutput = $msg.ActionOutput
+                # Get detailed status message if available
+                $statusMsgQuery = "SELECT * FROM SMS_StatusMessage WHERE RecordID = '$($msg.StatusMessageID)'"
+                $statusMsg = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+                    -ComputerName $script:sccmSiteServer `
+                    -Query $statusMsgQuery `
+                    -ErrorAction SilentlyContinue
+
+                # Format execution time
+                $executionTime = if ($msg.ExecutionTime) {
+                    try {
+                        [System.Management.ManagementDateTimeConverter]::ToDateTime($msg.ExecutionTime).ToString("yyyy-MM-dd HH:mm:ss")
+                    }
+                    catch { $msg.ExecutionTime }
+                } else { "" }
+
+                $executionSteps += [PSCustomObject]@{
+                    ComputerName = $ComputerName
+                    ExecutionTime = $executionTime
+                    Step = if ($msg.Step) { $msg.Step } else { 0 }
+                    ActionName = if ($msg.ActionName) { $msg.ActionName } else { "" }
+                    GroupName = if ($msg.GroupName) { $msg.GroupName } else { "" }
+                    LastStatusMsgName = if ($msg.LastStatusMessageName) { $msg.LastStatusMessageName } else { "" }
+                    StatusMessageID = if ($statusMsg) { $statusMsg.MessageID } else { "" }
+                    ExitCode = if ($null -ne $msg.ExitCode) { $msg.ExitCode } else { "" }
+                    ActionOutput = if ($msg.ActionOutput) { $msg.ActionOutput } else { "" }  # Full output, no truncation
                 }
             }
 
-            # Save to JSON file
-            $destFile = Join-Path $DestinationDirectory "$ComputerName`_TSStatusMessages.json"
-            $messageList | ConvertTo-Json -Depth 5 | Out-File -FilePath $destFile -Encoding utf8 -Force
+            # Sort by step number ascending (chronological order)
+            $executionSteps = $executionSteps | Sort-Object Step
 
-            Write-Host "  Saved $($messages.Count) TS execution steps to file" -ForegroundColor Green
+            # Save to JSON file
+            $jsonFile = Join-Path $DestinationDirectory "$ComputerName`_TSStatusMessages.json"
+            $executionSteps | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonFile -Encoding utf8 -Force
+
+            # Create HTML log file
+            $htmlFile = Join-Path $DestinationDirectory "$ComputerName`_TSExecutionLog.html"
+
+            $htmlContent = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>TS Execution Log - $ComputerName</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+        .action-output {
+            background-color: #f8f9fa;
+            padding: 15px;
+            margin: 10px 0;
+            border-left: 4px solid #3498db;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-width: 100%;
+            overflow-x: auto;
+        }
+        .step-row {
+            font-weight: 600;
+        }
+        .success {
+            color: #27ae60;
+        }
+        .failed {
+            color: #e74c3c;
+        }
+        .info {
+            color: #95a5a6;
+            font-size: 11px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Task Sequence Execution Log</h1>
+    <div class="info">
+        <p><strong>Computer:</strong> $ComputerName</p>
+        <p><strong>Task Sequence ID:</strong> $TaskSequenceID</p>
+        <p><strong>Generated:</strong> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</p>
+        <p><strong>Total Steps:</strong> $($executionSteps.Count)</p>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Step</th>
+                <th>Execution Time</th>
+                <th>Action Name</th>
+                <th>Group Name</th>
+                <th>Status Message</th>
+                <th>Exit Code</th>
+            </tr>
+        </thead>
+        <tbody>
+"@
+
+            foreach ($step in $executionSteps) {
+                $exitCodeClass = if ($step.ExitCode -eq 0) { "success" } elseif ($step.ExitCode -ne "") { "failed" } else { "" }
+
+                $htmlContent += @"
+            <tr>
+                <td class="step-row">$($step.Step)</td>
+                <td>$($step.ExecutionTime)</td>
+                <td>$($step.ActionName)</td>
+                <td>$($step.GroupName)</td>
+                <td>$($step.LastStatusMsgName)</td>
+                <td class="$exitCodeClass">$($step.ExitCode)</td>
+            </tr>
+"@
+
+                if (-not [string]::IsNullOrWhiteSpace($step.ActionOutput)) {
+                    # Escape HTML characters in output
+                    $escapedOutput = [System.Web.HttpUtility]::HtmlEncode($step.ActionOutput)
+                    $htmlContent += @"
+            <tr>
+                <td colspan="6">
+                    <strong>Action Output:</strong>
+                    <div class="action-output">$escapedOutput</div>
+                </td>
+            </tr>
+"@
+                }
+            }
+
+            $htmlContent += @"
+        </tbody>
+    </table>
+</body>
+</html>
+"@
+
+            $htmlContent | Out-File -FilePath $htmlFile -Encoding utf8 -Force
+
+            Write-Host "  Saved $($executionSteps.Count) TS execution steps (JSON + HTML)" -ForegroundColor Green
             return $true
         }
         else {
@@ -773,8 +910,8 @@ try {
         $isWindows11 = ($osVersion -eq "Windows 11")
         Write-Host "  OS: $osVersion" -ForegroundColor Gray
 
-        # Get TS status from SCCM status messages
-        $tsStatus = Get-TaskSequenceDeploymentStatusFromSCCM -ResourceID $resourceID -TaskSequenceID $taskSequenceID
+        # Get TS status from SCCM deployment status
+        $tsStatus = Get-TaskSequenceDeploymentStatusFromSCCM -ResourceID $resourceID -TaskSequenceID $taskSequenceID -ComputerName $computerName
 
         # Apply Windows 11 override
         if ($win11Override -and $isWindows11 -and $tsStatus -ne "Success") {
