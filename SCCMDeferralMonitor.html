@@ -657,8 +657,8 @@
                     row.classList.add('offline');
                 }
 
-                // Status indicator
-                const statusClass = device.IsOnline ? 'status-online' : 'status-offline';
+                // Status indicator - Fix: check boolean value correctly
+                const statusClass = (device.IsOnline === true) ? 'status-online' : 'status-offline';
 
                 // TS Status styling
                 const tsStatusClass = getTSStatusClass(device.TSStatus);
@@ -676,9 +676,9 @@
                         ? '<span class="trigger-yes">✓ Yes</span>'
                         : '<span class="trigger-no">✗ No</span>';
 
-                // Hostname verification indicator
+                // Hostname verification indicator - ONLY show for ONLINE machines
                 let verificationIndicator = '';
-                if (device.IsOnline && !device.HostnameVerified) {
+                if (device.IsOnline === true && device.HostnameVerified === false) {
                     const errorMsg = device.VerificationError || 'Hostname verification failed';
                     if (device.ActualHostname !== 'Unknown' && device.ActualHostname !== device.DeviceName) {
                         // DNS mismatch - critical error

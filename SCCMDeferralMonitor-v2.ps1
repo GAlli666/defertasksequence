@@ -377,8 +377,9 @@ function Confirm-ComputerIdentityViaJumpbox {
     }
 
     try {
+        # Use simple Get-WmiObject from jumpbox
         $result = Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
-            param($expected, $timeout)
+            param($computerName, $timeout)
 
             $verifyResult = @{
                 IsValid = $false
@@ -387,32 +388,22 @@ function Confirm-ComputerIdentityViaJumpbox {
             }
 
             try {
-                $connectionOptions = New-Object System.Management.ConnectionOptions
-                $connectionOptions.Timeout = New-TimeSpan -Seconds $timeout
+                # Simple WMI query with timeout
+                $wmiTimeout = $timeout * 1000  # Convert to milliseconds
+                $computerSystem = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $computerName -ErrorAction Stop -AsJob | Wait-Job -Timeout $timeout | Receive-Job
 
-                $scope = New-Object System.Management.ManagementScope("\\$expected\root\cimv2", $connectionOptions)
-                $scope.Connect()
+                if ($computerSystem) {
+                    $verifyResult.ActualName = $computerSystem.Name
 
-                $query = New-Object System.Management.ObjectQuery("SELECT Name FROM Win32_ComputerSystem")
-                $searcher = New-Object System.Management.ManagementObjectSearcher($scope, $query)
-
-                $computers = $searcher.Get()
-
-                foreach ($computer in $computers) {
-                    $verifyResult.ActualName = $computer["Name"]
-
-                    if ($verifyResult.ActualName -eq $expected) {
+                    if ($verifyResult.ActualName -eq $computerName) {
                         $verifyResult.IsValid = $true
                     }
                     else {
-                        $verifyResult.ErrorMessage = "Hostname mismatch: Expected '$expected', got '$($verifyResult.ActualName)'"
+                        $verifyResult.ErrorMessage = "Hostname mismatch: Expected '$computerName', got '$($verifyResult.ActualName)'"
                     }
-
-                    break
                 }
-
-                if ([string]::IsNullOrEmpty($verifyResult.ActualName) -or $verifyResult.ActualName -eq "Unknown") {
-                    $verifyResult.ErrorMessage = "Could not retrieve hostname via WMI"
+                else {
+                    $verifyResult.ErrorMessage = "WMI query returned null"
                 }
             }
             catch {
@@ -568,26 +559,61 @@ function Copy-DeferralLogViaJumpbox {
     }
 
     try {
-        # Copy from client to jumpbox temp location
+        # Copy from client to jumpbox temp location using C$ share
         $tempPath = Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
             param($computer, $sourcePath)
 
-            $uncPath = "\\$computer\$($sourcePath.Replace(':', '$'))"
+            # Build UNC path using C$ admin share
+            # Example: \\COMPUTER\C$\Windows\ccm\logs\TaskSequenceDeferral.log
+            $uncPath = "\\$computer\" + $sourcePath.Replace(':', '$')
+
+            Write-Verbose "Attempting to access: $uncPath"
 
             if (-not (Test-Path $uncPath)) {
+                Write-Warning "Log file not found: $uncPath"
                 return $null
             }
 
+            # Check if we need to update (compare with existing temp file)
             $tempFile = "$env:TEMP\$computer`_TaskSequenceDeferral.log"
+
+            # Always copy to get latest version
             Copy-Item $uncPath $tempFile -Force -ErrorAction Stop
+            Write-Verbose "Copied to temp: $tempFile"
 
             return $tempFile
-        } -ArgumentList $ComputerName, $SourcePath
+        } -ArgumentList $ComputerName, $SourcePath -Verbose
 
         if ($tempPath) {
-            # Copy from jumpbox to local
+            # Copy from jumpbox temp to local destination
             $destFile = Join-Path $DestinationDirectory "$ComputerName`_TaskSequenceDeferral.log"
-            Copy-Item -FromSession $script:jumpboxSession -Path $tempPath -Destination $destFile -Force
+
+            # Only copy if destination doesn't exist or source is newer
+            $shouldCopy = $false
+            if (-not (Test-Path $destFile)) {
+                $shouldCopy = $true
+            }
+            else {
+                # Get file times from jumpbox
+                $sourceTime = Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
+                    param($path)
+                    (Get-Item $path).LastWriteTime
+                } -ArgumentList $tempPath
+
+                $destTime = (Get-Item $destFile).LastWriteTime
+
+                if ($sourceTime -gt $destTime) {
+                    $shouldCopy = $true
+                }
+            }
+
+            if ($shouldCopy) {
+                Copy-Item -FromSession $script:jumpboxSession -Path $tempPath -Destination $destFile -Force
+                Write-Host "  Copied deferral log from $ComputerName" -ForegroundColor Green
+            }
+            else {
+                Write-Host "  Deferral log already up to date for $ComputerName" -ForegroundColor Gray
+            }
 
             # Clean up temp file on jumpbox
             Invoke-Command -Session $script:jumpboxSession -ScriptBlock {
@@ -595,14 +621,14 @@ function Copy-DeferralLogViaJumpbox {
                 Remove-Item $temp -Force -ErrorAction SilentlyContinue
             } -ArgumentList $tempPath
 
-            Write-Host "Copied deferral log from $ComputerName via jumpbox" -ForegroundColor Green
             return $true
         }
 
+        Write-Host "  No deferral log found for $ComputerName" -ForegroundColor Yellow
         return $false
     }
     catch {
-        Write-Host "Failed to copy deferral log via jumpbox: $_" -ForegroundColor Yellow
+        Write-Host "  Failed to copy deferral log from ${ComputerName}: $_" -ForegroundColor Red
         return $false
     }
 }
