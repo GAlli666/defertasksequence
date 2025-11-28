@@ -380,7 +380,66 @@ function Get-AllTaskSequenceDataFromSCCM {
             }
         }
 
-        Write-Host "[SUCCESS] Processed $($resultHash.Count) devices with TS data" -ForegroundColor Green
+        Write-Host "[SUCCESS] Processed $($resultHash.Count) devices with TS data from cmdlets" -ForegroundColor Green
+
+        # Now get detailed execution messages via WMI (SMS_StatusMessage) - collection-wide
+        Write-Host "`n[INFO] Querying SMS_StatusMessage WMI class for detailed step execution data..." -ForegroundColor Cyan
+
+        # Build ResourceID list for WMI query
+        $resourceIDs = ($CollectionMembers | ForEach-Object { $_.ResourceID }) -join "','"
+
+        # Query SMS_StatusMessage for TS execution messages
+        # MessageType 11171 is for TS step execution
+        $wmiQuery = "SELECT * FROM SMS_StatusMessage WHERE MachineName IN (SELECT Name FROM SMS_R_System WHERE ResourceId IN ('$resourceIDs')) AND Component = 'Task Sequence Engine' AND PackageID = '$TaskSequenceID'"
+
+        if ($DaysBack -gt 0) {
+            $startDate = (Get-Date).AddDays(-$DaysBack)
+            $wmiDate = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($startDate)
+            $wmiQuery += " AND Time >= '$wmiDate'"
+        }
+
+        Write-Host "[DEBUG] WMI Query: $wmiQuery" -ForegroundColor Gray
+
+        try {
+            $statusMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+                -ComputerName $script:sccmSiteServer `
+                -Query $wmiQuery `
+                -ErrorAction SilentlyContinue
+
+            if ($statusMessages) {
+                Write-Host "[SUCCESS] Retrieved $(@($statusMessages).Count) detailed status messages from WMI" -ForegroundColor Green
+
+                # Group by MachineName and add to existing results
+                $messagesByMachine = $statusMessages | Group-Object -Property MachineName
+
+                foreach ($group in $messagesByMachine) {
+                    $machineName = $group.Name
+                    if ($resultHash.ContainsKey($machineName)) {
+                        # Add detailed messages to existing entry
+                        $resultHash[$machineName].DetailedMessages = $group.Group
+                    }
+                    elseif ($monitoringMachines.ContainsKey($machineName)) {
+                        # Create new entry if machine is in monitoring collection
+                        $resultHash[$machineName] = @{
+                            Messages = @()
+                            Status = "Unknown"
+                            DetailedMessages = $group.Group
+                        }
+                    }
+                }
+
+                Write-Host "[SUCCESS] Added detailed execution messages to $($messagesByMachine.Count) device(s)" -ForegroundColor Green
+            }
+            else {
+                Write-Host "[WARNING] No detailed status messages found in SMS_StatusMessage" -ForegroundColor Yellow
+            }
+        }
+        catch {
+            Write-Host "[ERROR] Failed to query SMS_StatusMessage: $_" -ForegroundColor Red
+            Write-Host "[ERROR] Query was: $wmiQuery" -ForegroundColor Red
+        }
+
+        Write-Host "[SUCCESS] Processed $($resultHash.Count) total devices with TS data" -ForegroundColor Green
         return $resultHash
     }
     catch {
@@ -1171,8 +1230,19 @@ try {
             }
 
             # Save TS execution messages from the collection-wide data
-            if ($allTSData[$computerName].Messages) {
-                $tsMessagesDownloaded = Save-TaskSequenceExecutionLog -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -Messages $allTSData[$computerName].Messages -DestinationDirectory $logsDirectory
+            # Prefer DetailedMessages (from WMI) if available, otherwise use Messages (from cmdlet)
+            $messagesToSave = $null
+            if ($allTSData[$computerName].DetailedMessages) {
+                $messagesToSave = $allTSData[$computerName].DetailedMessages
+                Write-Host "  Using detailed WMI messages (SMS_StatusMessage)" -ForegroundColor Cyan
+            }
+            elseif ($allTSData[$computerName].Messages) {
+                $messagesToSave = $allTSData[$computerName].Messages
+                Write-Host "  Using cmdlet messages (SMS_ClassicDeploymentAssetDetails)" -ForegroundColor Cyan
+            }
+
+            if ($messagesToSave) {
+                $tsMessagesDownloaded = Save-TaskSequenceExecutionLog -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -Messages $messagesToSave -DestinationDirectory $logsDirectory
             }
         }
         else {
