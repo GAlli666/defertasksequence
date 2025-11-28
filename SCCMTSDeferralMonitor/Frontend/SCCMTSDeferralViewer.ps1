@@ -283,14 +283,14 @@ $xaml = @'
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <StackPanel Orientation="Horizontal">
-                                <Button Content="TS Status" Padding="10,5" Margin="0,0,5,0" FontSize="11" Click="ViewTSStatus_Click" Tag="{Binding}">
+                                <Button x:Name="btnTSStatus" Content="TS Status" Padding="10,5" Margin="0,0,5,0" FontSize="11" Tag="{Binding}">
                                     <Button.Style>
                                         <Style TargetType="Button" BasedOn="{StaticResource ModernButton}">
                                             <Setter Property="IsEnabled" Value="{Binding TSStatusMessagesAvailable}"/>
                                         </Style>
                                     </Button.Style>
                                 </Button>
-                                <Button Content="Deferral Log" Padding="10,5" FontSize="11" Click="ViewDeferralLog_Click" Tag="{Binding}">
+                                <Button x:Name="btnDeferralLog" Content="Deferral Log" Padding="10,5" FontSize="11" Tag="{Binding}">
                                     <Button.Style>
                                         <Style TargetType="Button" BasedOn="{StaticResource ModernButton}">
                                             <Setter Property="Background" Value="#FF6C757D"/>
@@ -448,19 +448,48 @@ $script:txtSearch.Add_TextChanged({ Apply-Filters })
 $script:cmbStatusFilter.Add_SelectionChanged({ Apply-Filters })
 $script:cmbTSFilter.Add_SelectionChanged({ Apply-Filters })
 
-# Button click handlers - defined in XAML
-$window.Add_Click({
+# DataGrid button click handler using PreviewMouseLeftButtonDown
+$script:dgDevices.Add_PreviewMouseLeftButtonDown({
     param($sender, $e)
 
-    if ($e.OriginalSource -is [System.Windows.Controls.Button]) {
-        $button = $e.OriginalSource
+    # Find if we clicked on a button
+    $source = $e.OriginalSource
+    $button = $null
+
+    # Walk up the visual tree to find a button
+    $current = $source
+    while ($current -ne $null) {
+        if ($current -is [System.Windows.Controls.Button]) {
+            $button = $current
+            break
+        }
+        if ($current -is [System.Windows.Media.Visual]) {
+            $current = [System.Windows.Media.VisualTreeHelper]::GetParent($current)
+        }
+        else {
+            break
+        }
+    }
+
+    if ($button -and $button.Tag) {
         $device = $button.Tag
 
-        if ($button.Content -eq "TS Status" -and $device) {
-            $logPath = Join-Path $script:LogsPath $device.TSStatusMessagesPath
-            Open-LogFile $logPath
+        if ($button.Content -eq "TS Status") {
+            # Try HTML file first, then JSON
+            $htmlPath = Join-Path $script:LogsPath ($device.DeviceName + "_TSExecutionLog.html")
+            $jsonPath = Join-Path $script:LogsPath $device.TSStatusMessagesPath
+
+            if (Test-Path $htmlPath) {
+                Start-Process $htmlPath
+            }
+            elseif (Test-Path $jsonPath) {
+                Open-LogFile $jsonPath
+            }
+            else {
+                [System.Windows.MessageBox]::Show("TS execution log not found for $($device.DeviceName)", "File Not Found", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+            }
         }
-        elseif ($button.Content -eq "Deferral Log" -and $device) {
+        elseif ($button.Content -eq "Deferral Log") {
             $logPath = Join-Path $script:LogsPath $device.DeferralLogPath
             Open-LogFile $logPath
         }

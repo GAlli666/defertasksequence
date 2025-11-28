@@ -198,19 +198,48 @@ function Get-TaskSequenceDeploymentStatusFromSCCM {
     )
 
     try {
+        Write-Host "  [DEBUG] Getting TS deployment status for $ComputerName" -ForegroundColor Cyan
+        Write-Host "  [DEBUG] ResourceID: $ResourceID, TaskSequenceID: $TaskSequenceID" -ForegroundColor Gray
+
         $currentLocation = Get-Location
         Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
+        Write-Host "  [DEBUG] Changed location to site drive: $($script:sccmSiteCode):" -ForegroundColor Gray
 
-        # Use cmdlet to get deployment status for this specific TS and computer
-        $deployments = Get-CMDeployment -SoftwareName (Get-CMTaskSequence -TaskSequencePackageId $TaskSequenceID).Name -ErrorAction SilentlyContinue
+        # Get task sequence name
+        $ts = Get-CMTaskSequence -TaskSequencePackageId $TaskSequenceID -ErrorAction SilentlyContinue
+        if (-not $ts) {
+            Write-Host "  [DEBUG] Task sequence not found for ID: $TaskSequenceID" -ForegroundColor Yellow
+            Set-Location $currentLocation
+            return "Unknown"
+        }
 
-        if ($deployments) {
-            foreach ($deployment in $deployments) {
-                # Get deployment status for this specific computer
-                $status = Get-CMDeploymentStatus -DeploymentId $deployment.DeploymentID -ErrorAction SilentlyContinue |
-                    Where-Object { $_.DeviceName -eq $ComputerName }
+        Write-Host "  [DEBUG] Task Sequence Name: $($ts.Name)" -ForegroundColor Gray
+
+        # Use cmdlet to get deployment status for this specific TS
+        $deployments = Get-CMDeployment -SoftwareName $ts.Name -ErrorAction SilentlyContinue
+
+        if (-not $deployments) {
+            Write-Host "  [DEBUG] No deployments found for TS: $($ts.Name)" -ForegroundColor Yellow
+            Set-Location $currentLocation
+            return "Not Started"
+        }
+
+        Write-Host "  [DEBUG] Found $(@($deployments).Count) deployment(s)" -ForegroundColor Gray
+
+        foreach ($deployment in $deployments) {
+            Write-Host "  [DEBUG] Checking deployment ID: $($deployment.DeploymentID)" -ForegroundColor Gray
+
+            # Get deployment status for this specific computer
+            $statuses = Get-CMDeploymentStatus -DeploymentId $deployment.DeploymentID -ErrorAction SilentlyContinue
+
+            if ($statuses) {
+                Write-Host "  [DEBUG] Found $(@($statuses).Count) status record(s) for deployment" -ForegroundColor Gray
+
+                # Try to find status for this computer
+                $status = $statuses | Where-Object { $_.DeviceName -eq $ComputerName }
 
                 if ($status) {
+                    Write-Host "  [DEBUG] Found status for $ComputerName - StatusType: $($status.StatusType)" -ForegroundColor Green
                     Set-Location $currentLocation
 
                     # Map status to our values
@@ -220,17 +249,28 @@ function Get-TaskSequenceDeploymentStatusFromSCCM {
                         3 { return "Requirements Not Met" }
                         4 { return "Unknown" }
                         5 { return "Failed" }
-                        default { return "Unknown" }
+                        default {
+                            Write-Host "  [DEBUG] Unmapped StatusType: $($status.StatusType)" -ForegroundColor Yellow
+                            return "Unknown"
+                        }
                     }
                 }
+                else {
+                    Write-Host "  [DEBUG] No status found for computer: $ComputerName in deployment $($deployment.DeploymentID)" -ForegroundColor Yellow
+                }
+            }
+            else {
+                Write-Host "  [DEBUG] No status records returned for deployment $($deployment.DeploymentID)" -ForegroundColor Yellow
             }
         }
 
+        Write-Host "  [DEBUG] No matching status found across all deployments - returning 'Not Started'" -ForegroundColor Yellow
         Set-Location $currentLocation
         return "Not Started"
     }
     catch {
-        Write-Host "Error getting TS status from SCCM: $_" -ForegroundColor Yellow
+        Write-Host "  [ERROR] Exception in Get-TaskSequenceDeploymentStatusFromSCCM: $_" -ForegroundColor Red
+        Write-Host "  [ERROR] Stack Trace: $($_.ScriptStackTrace)" -ForegroundColor Red
         if ($currentLocation) {
             Set-Location $currentLocation -ErrorAction SilentlyContinue
         }
@@ -241,22 +281,38 @@ function Get-TaskSequenceDeploymentStatusFromSCCM {
 function Get-AndSaveTaskSequenceStatusMessages {
     <#
     .SYNOPSIS
-        Downloads ALL TS execution status from SCCM for a computer and saves to JSON and HTML files
+        Downloads TS execution status from SCCM for a computer and saves to JSON and HTML files
         Uses simple WQL queries (no JOINs) to get execution history with full ActionOutput
     #>
     param(
         [string]$ComputerName,
         [string]$ResourceID,
         [string]$TaskSequenceID,
-        [string]$DestinationDirectory
+        [string]$DestinationDirectory,
+        [int]$DaysBack = 0
     )
 
     try {
         Write-Host "  Downloading TS execution status from SCCM..." -ForegroundColor Cyan
+        Write-Host "  [DEBUG] Parameters - Computer: $ComputerName, ResourceID: $ResourceID, TSID: $TaskSequenceID, DaysBack: $DaysBack" -ForegroundColor Gray
 
-        # Simple WQL query - no INNER JOIN (not supported in WQL)
-        # Query the execution status view directly
+        # Build WQL query with optional date filter
         $query = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID = '$ResourceID' AND PackageID = '$TaskSequenceID'"
+
+        # Add date filter if DaysBack > 0
+        if ($DaysBack -gt 0) {
+            $startDate = (Get-Date).AddDays(-$DaysBack)
+            # Convert to WMI datetime format (yyyymmddHHMMSS.ffffff+UTC)
+            $wmiDate = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($startDate)
+            $query += " AND ExecutionTime >= '$wmiDate'"
+            Write-Host "  [DEBUG] Date filter applied: Last $DaysBack days (since $($startDate.ToString('yyyy-MM-dd')))" -ForegroundColor Gray
+        }
+        else {
+            Write-Host "  [DEBUG] No date filter - retrieving all history" -ForegroundColor Gray
+        }
+
+        Write-Host "  [DEBUG] WQL Query: $query" -ForegroundColor Gray
+        Write-Host "  [DEBUG] Namespace: ROOT\SMS\site_$($script:sccmSiteCode), Server: $script:sccmSiteServer" -ForegroundColor Gray
 
         $messages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
             -ComputerName $script:sccmSiteServer `
@@ -264,6 +320,7 @@ function Get-AndSaveTaskSequenceStatusMessages {
             -ErrorAction SilentlyContinue
 
         if ($messages -and $messages.Count -gt 0) {
+            Write-Host "  [DEBUG] Found $($messages.Count) execution status message(s)" -ForegroundColor Green
             # Convert to structured format with full details
             $executionSteps = @()
 
@@ -436,12 +493,14 @@ function Get-AndSaveTaskSequenceStatusMessages {
             return $true
         }
         else {
-            Write-Host "  No TS execution data found in SCCM" -ForegroundColor Yellow
+            Write-Host "  [DEBUG] No TS execution data found in SCCM for query" -ForegroundColor Yellow
+            Write-Host "  [DEBUG] Messages variable state - IsNull: $($null -eq $messages), Count: $($messages.Count)" -ForegroundColor Yellow
             return $false
         }
     }
     catch {
-        Write-Host "  Failed to get TS execution status: $_" -ForegroundColor Red
+        Write-Host "  [ERROR] Failed to get TS execution status: $_" -ForegroundColor Red
+        Write-Host "  [ERROR] Stack Trace: $($_.ScriptStackTrace)" -ForegroundColor Red
         return $false
     }
 }
@@ -799,6 +858,7 @@ try {
     $win11Override = [System.Convert]::ToBoolean($config.Configuration.Settings.Monitoring.Windows11OverrideSuccess)
     $hostnameVerificationTimeout = [int]$config.Configuration.Settings.Monitoring.HostnameVerificationTimeoutSeconds
     $pingTimeout = [int]$config.Configuration.Settings.Monitoring.PingTimeoutMs
+    $tsStatusMessagesDaysBack = [int]$config.Configuration.Settings.Monitoring.TSStatusMessagesDaysBack
 
     # Store site server in script scope
     $script:sccmSiteServer = $siteServer
@@ -923,7 +983,7 @@ try {
         }
 
         # Download and save TS status messages from SCCM
-        $tsMessagesDownloaded = Get-AndSaveTaskSequenceStatusMessages -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -DestinationDirectory $logsDirectory
+        $tsMessagesDownloaded = Get-AndSaveTaskSequenceStatusMessages -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -DestinationDirectory $logsDirectory -DaysBack $tsStatusMessagesDaysBack
 
         # Get deferral log data
         $deferralData = @{
