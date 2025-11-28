@@ -476,16 +476,26 @@ function Save-TaskSequenceExecutionLog {
 
     try {
         if (-not $Messages -or $Messages.Count -eq 0) {
-            Write-Host "  No TS execution messages for $ComputerName" -ForegroundColor Gray
+            Write-Host "  [DEBUG] No TS execution messages for $ComputerName" -ForegroundColor Gray
             return $false
         }
 
-        Write-Host "  Processing $($Messages.Count) TS execution message(s) for $ComputerName" -ForegroundColor Cyan
+        Write-Host "  [DEBUG] Processing $($Messages.Count) TS execution message(s) for $ComputerName" -ForegroundColor Cyan
+
+        # DEBUG: Show first message properties
+        Write-Host "  [DEBUG] First message object type: $($Messages[0].GetType().FullName)" -ForegroundColor Yellow
+        Write-Host "  [DEBUG] First message properties:" -ForegroundColor Yellow
+        $Messages[0] | Get-Member -MemberType Property | ForEach-Object {
+            Write-Host "    - $($_.Name): $($Messages[0].$($_.Name))" -ForegroundColor Gray
+        }
 
         # Convert to structured format with full details
         $executionSteps = @()
+        $stepCount = 0
 
         foreach ($msg in $Messages) {
+                $stepCount++
+
                 # SMS_TaskSequenceExecutionStatus WMI class has properties WITHOUT spaces
                 # ExecutionTime is WMI datetime format that needs conversion
 
@@ -497,6 +507,24 @@ function Save-TaskSequenceExecutionLog {
                     }
                     catch {
                         $executionTime = $msg.ExecutionTime
+                        Write-Host "  [ERROR] Failed to convert ExecutionTime: $_" -ForegroundColor Red
+                    }
+                }
+
+                $actionOutput = if ($msg.ActionOutput) { $msg.ActionOutput } else { "" }
+
+                # DEBUG: Show sample data for first few steps
+                if ($stepCount -le 3) {
+                    Write-Host "  [DEBUG] Step $stepCount data:" -ForegroundColor Yellow
+                    Write-Host "    Step: $($msg.Step)" -ForegroundColor Gray
+                    Write-Host "    ActionName: $($msg.ActionName)" -ForegroundColor Gray
+                    Write-Host "    GroupName: $($msg.GroupName)" -ForegroundColor Gray
+                    Write-Host "    ExitCode: $($msg.ExitCode)" -ForegroundColor Gray
+                    Write-Host "    ActionOutput length: $($actionOutput.Length) chars" -ForegroundColor Gray
+                    if ($actionOutput.Length -gt 0) {
+                        Write-Host "    ActionOutput preview: $($actionOutput.Substring(0, [Math]::Min(100, $actionOutput.Length)))..." -ForegroundColor Gray
+                    } else {
+                        Write-Host "    ActionOutput: [EMPTY]" -ForegroundColor Red
                     }
                 }
 
@@ -509,19 +537,34 @@ function Save-TaskSequenceExecutionLog {
                     LastStatusMsgName = if ($msg.LastStatusMsgName) { $msg.LastStatusMsgName } else { "" }
                     LastMessageID = if ($msg.LastStatusMsgID) { $msg.LastStatusMsgID } else { "" }
                     ExitCode = if ($null -ne $msg.ExitCode) { $msg.ExitCode } else { "" }
-                    ActionOutput = if ($msg.ActionOutput) { $msg.ActionOutput } else { "" }  # Full output, NO truncation!
+                    ActionOutput = $actionOutput  # Full output, NO truncation!
                 }
             }
+
+            Write-Host "  [DEBUG] Created $($executionSteps.Count) execution step objects" -ForegroundColor Yellow
+
+            # Check if any have ActionOutput
+            $stepsWithOutput = $executionSteps | Where-Object { $_.ActionOutput -and $_.ActionOutput.Length -gt 0 }
+            Write-Host "  [DEBUG] Steps with ActionOutput: $($stepsWithOutput.Count) / $($executionSteps.Count)" -ForegroundColor $(if ($stepsWithOutput.Count -gt 0) { "Green" } else { "Red" })
 
             # Sort by step number ascending (chronological order)
             $executionSteps = $executionSteps | Sort-Object Step
 
             # Save to JSON file
             $jsonFile = Join-Path $DestinationDirectory "$ComputerName`_TSStatusMessages.json"
-            $executionSteps | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonFile -Encoding utf8 -Force
+            Write-Host "  [DEBUG] Saving JSON to: $jsonFile" -ForegroundColor Yellow
+            try {
+                $executionSteps | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonFile -Encoding utf8 -Force
+                Write-Host "  [SUCCESS] JSON file saved: $((Get-Item $jsonFile).Length) bytes" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "  [ERROR] Failed to save JSON: $_" -ForegroundColor Red
+                Write-Host "  [ERROR] Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
+            }
 
             # Create HTML log file
             $htmlFile = Join-Path $DestinationDirectory "$ComputerName`_TSExecutionLog.html"
+            Write-Host "  [DEBUG] Creating HTML file: $htmlFile" -ForegroundColor Yellow
 
             $htmlContent = @"
 <!DOCTYPE html>
