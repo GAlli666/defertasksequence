@@ -198,174 +198,166 @@ function Get-TaskSequenceDeploymentStatusFromSCCM {
     )
 
     try {
-        Write-Host "  [DEBUG] Getting TS deployment status for $ComputerName" -ForegroundColor Cyan
-        Write-Host "  [DEBUG] ResourceID: $ResourceID, TaskSequenceID: $TaskSequenceID" -ForegroundColor Gray
+        # Query WMI directly for per-device status using SMS_ClientAdvertisementStatus
+        # This has actual device-level status, unlike Get-CMDeploymentStatus which returns summary data
+        $query = @"
+SELECT sys.Name0, adv.AdvertisementID, adv.LastStateName, adv.LastStatusMessageID
+FROM SMS_ClientAdvertisementStatus adv
+JOIN SMS_R_System sys ON adv.ResourceID = sys.ResourceId
+WHERE adv.ResourceID = '$ResourceID' AND adv.AdvertisementID LIKE '%$TaskSequenceID%'
+"@
 
-        $currentLocation = Get-Location
-        Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
-        Write-Host "  [DEBUG] Changed location to site drive: $($script:sccmSiteCode):" -ForegroundColor Gray
+        Write-Host "  [DEBUG] Querying SMS_ClientAdvertisementStatus for device-level TS status" -ForegroundColor Gray
 
-        # Get task sequence name
-        $ts = Get-CMTaskSequence -TaskSequencePackageId $TaskSequenceID -ErrorAction SilentlyContinue
-        if (-not $ts) {
-            Write-Host "  [DEBUG] Task sequence not found for ID: $TaskSequenceID" -ForegroundColor Yellow
-            Set-Location $currentLocation
-            return "Unknown"
+        $status = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+            -ComputerName $script:sccmSiteServer `
+            -Query $query `
+            -ErrorAction SilentlyContinue
+
+        if ($status) {
+            Write-Host "  [DEBUG] Found advertisement status: $($status.LastStateName)" -ForegroundColor Green
+
+            # Map common state names to our status values
+            switch -Wildcard ($status.LastStateName) {
+                "*Success*" { return "Success" }
+                "*Running*" { return "In Progress" }
+                "*Progress*" { return "In Progress" }
+                "*Failed*" { return "Failed" }
+                "*Error*" { return "Failed" }
+                "*Waiting*" { return "Not Started" }
+                default { return $status.LastStateName }
+            }
         }
+        else {
+            Write-Host "  [DEBUG] No advertisement status found - checking if any execution history exists" -ForegroundColor Gray
 
-        Write-Host "  [DEBUG] Task Sequence Name: $($ts.Name)" -ForegroundColor Gray
+            # Check if there's any execution history at all
+            $execQuery = "SELECT TOP 1 * FROM SMS_TaskExecutionStatus WHERE ResourceID = '$ResourceID' AND PackageID = '$TaskSequenceID'"
+            $execStatus = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+                -ComputerName $script:sccmSiteServer `
+                -Query $execQuery `
+                -ErrorAction SilentlyContinue
 
-        # Use cmdlet to get deployment status for this specific TS
-        $deployments = Get-CMDeployment -SoftwareName $ts.Name -ErrorAction SilentlyContinue
+            if ($execStatus) {
+                return "In Progress"
+            }
 
-        if (-not $deployments) {
-            Write-Host "  [DEBUG] No deployments found for TS: $($ts.Name)" -ForegroundColor Yellow
-            Set-Location $currentLocation
             return "Not Started"
         }
-
-        Write-Host "  [DEBUG] Found $(@($deployments).Count) deployment(s)" -ForegroundColor Gray
-
-        foreach ($deployment in $deployments) {
-            Write-Host "  [DEBUG] Checking deployment ID: $($deployment.DeploymentID)" -ForegroundColor Gray
-
-            # Get deployment status for this specific computer
-            $statuses = Get-CMDeploymentStatus -DeploymentId $deployment.DeploymentID -ErrorAction SilentlyContinue
-
-            if ($statuses) {
-                Write-Host "  [DEBUG] Found $(@($statuses).Count) status record(s) for deployment" -ForegroundColor Gray
-
-                # Show what device names are in the records
-                $deviceNames = ($statuses | Select-Object -ExpandProperty DeviceName -Unique) -join ', '
-                Write-Host "  [DEBUG] Device names in status records: $deviceNames" -ForegroundColor Gray
-
-                # Try to find status for this computer
-                $status = $statuses | Where-Object { $_.DeviceName -eq $ComputerName }
-
-                if ($status) {
-                    Write-Host "  [DEBUG] Found status for $ComputerName - StatusType: $($status.StatusType)" -ForegroundColor Green
-                    Set-Location $currentLocation
-
-                    # Map status to our values
-                    switch ($status.StatusType) {
-                        1 { return "Success" }
-                        2 { return "In Progress" }
-                        3 { return "Requirements Not Met" }
-                        4 { return "Unknown" }
-                        5 { return "Failed" }
-                        default {
-                            Write-Host "  [DEBUG] Unmapped StatusType: $($status.StatusType)" -ForegroundColor Yellow
-                            return "Unknown"
-                        }
-                    }
-                }
-                else {
-                    Write-Host "  [DEBUG] No status found for computer: $ComputerName in deployment $($deployment.DeploymentID)" -ForegroundColor Yellow
-                    Write-Host "  [DEBUG] Expected: '$ComputerName' | Available: $deviceNames" -ForegroundColor Yellow
-                }
-            }
-            else {
-                Write-Host "  [DEBUG] No status records returned for deployment $($deployment.DeploymentID)" -ForegroundColor Yellow
-            }
-        }
-
-        Write-Host "  [DEBUG] No matching status found across all deployments - returning 'Not Started'" -ForegroundColor Yellow
-        Set-Location $currentLocation
-        return "Not Started"
     }
     catch {
         Write-Host "  [ERROR] Exception in Get-TaskSequenceDeploymentStatusFromSCCM: $_" -ForegroundColor Red
         Write-Host "  [ERROR] Stack Trace: $($_.ScriptStackTrace)" -ForegroundColor Red
-        if ($currentLocation) {
-            Set-Location $currentLocation -ErrorAction SilentlyContinue
-        }
         return "Unknown"
     }
 }
 
-function Get-AndSaveTaskSequenceStatusMessages {
+function Get-AllTaskSequenceExecutionMessages {
     <#
     .SYNOPSIS
-        Downloads TS execution status from SCCM for a computer and saves to JSON and HTML files
-        Uses simple WQL queries (no JOINs) to get execution history with full ActionOutput
+        Downloads ALL TS execution messages for the entire collection at once
+        More efficient than querying per-machine
     #>
     param(
-        [string]$ComputerName,
-        [string]$ResourceID,
+        [array]$CollectionMembers,
         [string]$TaskSequenceID,
         [string]$DestinationDirectory,
         [int]$DaysBack = 0
     )
 
     try {
-        Write-Host "  Downloading TS execution status from SCCM..." -ForegroundColor Cyan
-        Write-Host "  [DEBUG] Parameters - Computer: $ComputerName, ResourceID: $ResourceID, TSID: $TaskSequenceID, DaysBack: $DaysBack" -ForegroundColor Gray
+        Write-Host "`nCollecting TS execution messages for entire collection..." -ForegroundColor Cyan
 
-        # Build WQL query with optional date filter
-        $query = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID = '$ResourceID' AND PackageID = '$TaskSequenceID'"
+        # Build list of ResourceIDs
+        $resourceIDs = ($CollectionMembers | ForEach-Object { $_.ResourceID }) -join "','"
+
+        # Build WQL query for all collection members
+        $query = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID IN ('$resourceIDs') AND PackageID = '$TaskSequenceID'"
 
         # Add date filter if DaysBack > 0
         if ($DaysBack -gt 0) {
             $startDate = (Get-Date).AddDays(-$DaysBack)
-            # Convert to WMI datetime format (yyyymmddHHMMSS.ffffff+UTC)
             $wmiDate = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($startDate)
             $query += " AND ExecutionTime >= '$wmiDate'"
-            Write-Host "  [DEBUG] Date filter applied: Last $DaysBack days (since $($startDate.ToString('yyyy-MM-dd')))" -ForegroundColor Gray
-        }
-        else {
-            Write-Host "  [DEBUG] No date filter - retrieving all history" -ForegroundColor Gray
+            Write-Host "[DEBUG] Date filter: Last $DaysBack days (since $($startDate.ToString('yyyy-MM-dd')))" -ForegroundColor Gray
         }
 
-        Write-Host "  [DEBUG] WQL Query: $query" -ForegroundColor Gray
-        Write-Host "  [DEBUG] Namespace: ROOT\SMS\site_$($script:sccmSiteCode), Server: $script:sccmSiteServer" -ForegroundColor Gray
+        Write-Host "[DEBUG] Querying all execution messages for collection..." -ForegroundColor Gray
+        Write-Host "[DEBUG] ResourceIDs count: $($CollectionMembers.Count)" -ForegroundColor Gray
 
-        $messages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+        $allMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
             -ComputerName $script:sccmSiteServer `
             -Query $query `
             -ErrorAction SilentlyContinue
 
-        if ($messages -and $messages.Count -gt 0) {
-            Write-Host "  [DEBUG] Found $($messages.Count) execution status message(s)" -ForegroundColor Green
-        }
-        else {
-            # Try broader query without date filter to see if ANY records exist
-            Write-Host "  [DEBUG] No messages with current query. Trying without date filter..." -ForegroundColor Yellow
-            $testQuery = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID = '$ResourceID' AND PackageID = '$TaskSequenceID'"
-            $testMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
-                -ComputerName $script:sccmSiteServer `
-                -Query $testQuery `
-                -ErrorAction SilentlyContinue
+        if (-not $allMessages -or $allMessages.Count -eq 0) {
+            Write-Host "[DEBUG] No TS execution messages found for any collection members" -ForegroundColor Yellow
 
-            if ($testMessages) {
-                Write-Host "  [DEBUG] Found $($testMessages.Count) record(s) WITHOUT date filter - date filter may be too restrictive" -ForegroundColor Yellow
-                $messages = $testMessages
-            }
-            else {
-                # Try even broader - just ResourceID
-                Write-Host "  [DEBUG] No records found. Trying with just ResourceID..." -ForegroundColor Yellow
-                $testQuery2 = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID = '$ResourceID'"
-                $testMessages2 = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+            # Try without date filter
+            if ($DaysBack -gt 0) {
+                Write-Host "[DEBUG] Retrying without date filter..." -ForegroundColor Yellow
+                $query = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID IN ('$resourceIDs') AND PackageID = '$TaskSequenceID'"
+                $allMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
                     -ComputerName $script:sccmSiteServer `
-                    -Query $testQuery2 `
+                    -Query $query `
                     -ErrorAction SilentlyContinue
 
-                if ($testMessages2) {
-                    Write-Host "  [DEBUG] Found $($testMessages2.Count) record(s) for ResourceID across all packages" -ForegroundColor Yellow
-                    $packageIDs = ($testMessages2 | Select-Object -ExpandProperty PackageID -Unique) -join ', '
-                    Write-Host "  [DEBUG] PackageIDs found: $packageIDs" -ForegroundColor Yellow
-                    Write-Host "  [DEBUG] Expected PackageID: $TaskSequenceID" -ForegroundColor Yellow
+                if ($allMessages) {
+                    Write-Host "[DEBUG] Found $($allMessages.Count) messages WITHOUT date filter" -ForegroundColor Yellow
                 }
-                else {
-                    Write-Host "  [DEBUG] No SMS_TaskExecutionStatus records exist for ResourceID $ResourceID at all" -ForegroundColor Red
-                }
+            }
+
+            if (-not $allMessages) {
+                return @{}
             }
         }
 
-        if ($messages -and $messages.Count -gt 0) {
-            # Convert to structured format with full details
-            $executionSteps = @()
+        Write-Host "[SUCCESS] Found $($allMessages.Count) total execution messages" -ForegroundColor Green
 
-            foreach ($msg in $messages) {
+        # Group messages by ResourceID
+        $messagesByResource = $allMessages | Group-Object -Property ResourceID
+        Write-Host "[DEBUG] Messages grouped into $($messagesByResource.Count) resource(s)" -ForegroundColor Gray
+
+        # Create hashtable: ResourceID -> Array of messages
+        $resultHash = @{}
+        foreach ($group in $messagesByResource) {
+            $resultHash[$group.Name] = $group.Group
+        }
+
+        return $resultHash
+    }
+    catch {
+        Write-Host "[ERROR] Failed to collect TS execution messages: $_" -ForegroundColor Red
+        Write-Host "[ERROR] Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
+        return @{}
+    }
+}
+
+function Save-TaskSequenceExecutionLog {
+    <#
+    .SYNOPSIS
+        Saves TS execution messages for a single computer to JSON and HTML files
+    #>
+    param(
+        [string]$ComputerName,
+        [string]$ResourceID,
+        [string]$TaskSequenceID,
+        [array]$Messages,
+        [string]$DestinationDirectory
+    )
+
+    try {
+        if (-not $Messages -or $Messages.Count -eq 0) {
+            Write-Host "  No TS execution messages for $ComputerName" -ForegroundColor Gray
+            return $false
+        }
+
+        Write-Host "  Processing $($Messages.Count) TS execution message(s) for $ComputerName" -ForegroundColor Cyan
+
+        # Convert to structured format with full details
+        $executionSteps = @()
+
+        foreach ($msg in $Messages) {
                 # Get detailed status message if available
                 $statusMsgQuery = "SELECT * FROM SMS_StatusMessage WHERE RecordID = '$($msg.StatusMessageID)'"
                 $statusMsg = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
@@ -573,32 +565,128 @@ function Get-DevicePrimaryUser {
     }
 }
 
-function Get-DeviceOSVersion {
-    param([string]$ComputerName)
+function Get-DeviceOSInfo {
+    param(
+        [string]$ComputerName,
+        [string]$ResourceID
+    )
 
     try {
-        $currentLocation = Get-Location
-        Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
+        # Query SMS_R_System for detailed OS information including build number
+        $query = "SELECT Build01, Caption0, Version0 FROM SMS_R_System WHERE ResourceID = '$ResourceID'"
 
-        $device = Get-CMDevice -Name $ComputerName -ErrorAction SilentlyContinue
+        $system = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+            -ComputerName $script:sccmSiteServer `
+            -Query $query `
+            -ErrorAction SilentlyContinue
 
-        Set-Location $currentLocation
+        if ($system) {
+            $build = $system.Build01
+            $version = $system.Version0
 
-        if ($device -and $device.OSVersion) {
-            # Windows 11 builds: 22000, 22621, 26100, etc. (all 10.0.2xxxx and above)
-            if ($device.OSVersion -match '10\.0\.(2[2-9]\d{3}|[3-9]\d{4})') {
-                return "Windows 11"
+            # Determine OS name ONLY from build number (SCCM Caption0 is unreliable)
+            $osName = "Unknown"
+            $isWindows11 = $false
+            $buildNumber = ""
+
+            if ($build -and $build -match '10\.0\.(\d+)') {
+                $buildNumber = $matches[1]
+                $buildNum = [int]$buildNumber
+
+                # Determine OS from build number only
+                if ($buildNum -ge 22000) {
+                    # Windows 11 version mapping
+                    if ($buildNum -ge 26100) {
+                        $osName = "Windows 11 24H2"
+                    }
+                    elseif ($buildNum -ge 22631) {
+                        $osName = "Windows 11 23H2"
+                    }
+                    elseif ($buildNum -ge 22621) {
+                        $osName = "Windows 11 22H2"
+                    }
+                    elseif ($buildNum -ge 22000) {
+                        $osName = "Windows 11 21H2"
+                    }
+                    $isWindows11 = $true
+                }
+                elseif ($buildNum -ge 10240) {
+                    # Windows 10 version mapping
+                    if ($buildNum -ge 19045) {
+                        $osName = "Windows 10 22H2"
+                    }
+                    elseif ($buildNum -ge 19044) {
+                        $osName = "Windows 10 21H2"
+                    }
+                    elseif ($buildNum -ge 19043) {
+                        $osName = "Windows 10 21H1"
+                    }
+                    elseif ($buildNum -ge 19042) {
+                        $osName = "Windows 10 20H2"
+                    }
+                    elseif ($buildNum -ge 19041) {
+                        $osName = "Windows 10 2004"
+                    }
+                    elseif ($buildNum -ge 18363) {
+                        $osName = "Windows 10 1909"
+                    }
+                    elseif ($buildNum -ge 18362) {
+                        $osName = "Windows 10 1903"
+                    }
+                    elseif ($buildNum -ge 17763) {
+                        $osName = "Windows 10 1809"
+                    }
+                    elseif ($buildNum -ge 17134) {
+                        $osName = "Windows 10 1803"
+                    }
+                    elseif ($buildNum -ge 16299) {
+                        $osName = "Windows 10 1709"
+                    }
+                    elseif ($buildNum -ge 15063) {
+                        $osName = "Windows 10 1703"
+                    }
+                    elseif ($buildNum -ge 14393) {
+                        $osName = "Windows 10 1607"
+                    }
+                    elseif ($buildNum -ge 10586) {
+                        $osName = "Windows 10 1511"
+                    }
+                    else {
+                        $osName = "Windows 10 1507"
+                    }
+                }
+                else {
+                    # Older Windows versions
+                    $osName = "Windows (Build $buildNumber)"
+                }
             }
-            return $device.OSVersion
+
+            return @{
+                OSName = $osName
+                Build = $build
+                BuildNumber = $buildNumber
+                Version = $version
+                IsWindows11 = $isWindows11
+            }
         }
 
-        return "Unknown"
+        return @{
+            OSName = "Unknown"
+            Build = ""
+            BuildNumber = ""
+            Version = ""
+            IsWindows11 = $false
+        }
     }
     catch {
-        if ($currentLocation) {
-            Set-Location $currentLocation -ErrorAction SilentlyContinue
+        Write-Host "  [ERROR] Failed to get OS info: $_" -ForegroundColor Red
+        return @{
+            OSName = "Unknown"
+            Build = ""
+            BuildNumber = ""
+            Version = ""
+            IsWindows11 = $false
         }
-        return "Unknown"
     }
 }
 
@@ -964,6 +1052,9 @@ try {
 
     Write-Host "`nProcessing $($members.Count) collection members...`n" -ForegroundColor Cyan
 
+    # Collect ALL TS execution messages for the collection at once (more efficient)
+    $allTSMessages = Get-AllTaskSequenceExecutionMessages -CollectionMembers $members -TaskSequenceID $taskSequenceID -DestinationDirectory $logsDirectory -DaysBack $tsStatusMessagesDaysBack
+
     # Process each member
     $deviceDataList = @()
     $count = 0
@@ -1006,9 +1097,9 @@ try {
         $primaryUser = Get-DevicePrimaryUser -ComputerName $computerName
         Write-Host "  Primary User: $primaryUser" -ForegroundColor Gray
 
-        $osVersion = Get-DeviceOSVersion -ComputerName $computerName
-        $isWindows11 = ($osVersion -eq "Windows 11")
-        Write-Host "  OS: $osVersion" -ForegroundColor Gray
+        $osInfo = Get-DeviceOSInfo -ComputerName $computerName -ResourceID $resourceID
+        $isWindows11 = $osInfo.IsWindows11
+        Write-Host "  OS: $($osInfo.OSName) (Build: $($osInfo.BuildNumber))" -ForegroundColor Gray
 
         # Get TS status from SCCM deployment status
         $tsStatus = Get-TaskSequenceDeploymentStatusFromSCCM -ResourceID $resourceID -TaskSequenceID $taskSequenceID -ComputerName $computerName
@@ -1022,8 +1113,14 @@ try {
             Write-Host "  TS Status: $tsStatus" -ForegroundColor Gray
         }
 
-        # Download and save TS status messages from SCCM
-        $tsMessagesDownloaded = Get-AndSaveTaskSequenceStatusMessages -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -DestinationDirectory $logsDirectory -DaysBack $tsStatusMessagesDaysBack
+        # Save TS status messages if available for this computer
+        $tsMessagesDownloaded = $false
+        if ($allTSMessages.ContainsKey($resourceID)) {
+            $tsMessagesDownloaded = Save-TaskSequenceExecutionLog -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -Messages $allTSMessages[$resourceID] -DestinationDirectory $logsDirectory
+        }
+        else {
+            Write-Host "  No TS execution messages found for this computer" -ForegroundColor Gray
+        }
 
         # Get deferral log data
         $deferralData = @{
@@ -1057,7 +1154,9 @@ try {
             ActualHostname = $actualHostname
             VerificationError = $verificationError
             TSStatus = $tsStatus
-            OSVersion = $osVersion
+            OSName = $osInfo.OSName
+            OSVersion = $osInfo.Build
+            OSBuildNumber = $osInfo.BuildNumber
             IsWindows11 = [bool]$isWindows11
             DeferralCount = if ($deferralData.LogAvailable) { $deferralData.DeferralCount } else { "N/A" }
             TSTriggerAttempted = if ($deferralData.LogAvailable) { $deferralData.TSTriggerAttempted } else { "N/A" }
