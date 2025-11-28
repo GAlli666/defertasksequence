@@ -255,12 +255,13 @@ WHERE adv.ResourceID = '$ResourceID' AND adv.AdvertisementID LIKE '%$TaskSequenc
 function Get-AllTaskSequenceExecutionMessages {
     <#
     .SYNOPSIS
-        Downloads ALL TS execution messages for the entire collection at once
-        More efficient than querying per-machine
+        Downloads ALL TS execution messages for the entire collection at once using ConfigMgr cmdlets
+        Uses Get-CMDeploymentStatusDetails to retrieve detailed execution information
     #>
     param(
         [array]$CollectionMembers,
         [string]$TaskSequenceID,
+        [string]$CollectionID,
         [string]$DestinationDirectory,
         [int]$DaysBack = 0
     )
@@ -268,60 +269,76 @@ function Get-AllTaskSequenceExecutionMessages {
     try {
         Write-Host "`nCollecting TS execution messages for entire collection..." -ForegroundColor Cyan
 
-        # Build list of ResourceIDs
-        $resourceIDs = ($CollectionMembers | ForEach-Object { $_.ResourceID }) -join "','"
+        # Get all deployments for this task sequence
+        $currentLocation = Get-Location
+        Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
 
-        # Build WQL query for all collection members
-        $query = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID IN ('$resourceIDs') AND PackageID = '$TaskSequenceID'"
+        $deployments = Get-CMTaskSequenceDeployment -TaskSequenceId $TaskSequenceID -CollectionId $CollectionID -ErrorAction SilentlyContinue
 
-        # Add date filter if DaysBack > 0
-        if ($DaysBack -gt 0) {
-            $startDate = (Get-Date).AddDays(-$DaysBack)
-            $wmiDate = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($startDate)
-            $query += " AND ExecutionTime >= '$wmiDate'"
-            Write-Host "[DEBUG] Date filter: Last $DaysBack days (since $($startDate.ToString('yyyy-MM-dd')))" -ForegroundColor Gray
+        Set-Location $currentLocation
+
+        if (-not $deployments) {
+            Write-Host "[WARNING] No deployments found for TaskSequence $TaskSequenceID to Collection $CollectionID" -ForegroundColor Yellow
+            return @{}
         }
 
-        Write-Host "[DEBUG] Querying all execution messages for collection..." -ForegroundColor Gray
-        Write-Host "[DEBUG] ResourceIDs count: $($CollectionMembers.Count)" -ForegroundColor Gray
+        Write-Host "[DEBUG] Found $(@($deployments).Count) deployment(s) for this TS" -ForegroundColor Gray
 
-        $allMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
-            -ComputerName $script:sccmSiteServer `
-            -Query $query `
-            -ErrorAction SilentlyContinue
+        # Collect all status details from all deployments
+        $allStatusDetails = @()
 
-        if (-not $allMessages -or $allMessages.Count -eq 0) {
-            Write-Host "[DEBUG] No TS execution messages found for any collection members" -ForegroundColor Yellow
+        foreach ($deployment in $deployments) {
+            Write-Host "[DEBUG] Getting status details for deployment: $($deployment.AdvertisementID)" -ForegroundColor Gray
 
-            # Try without date filter
-            if ($DaysBack -gt 0) {
-                Write-Host "[DEBUG] Retrying without date filter..." -ForegroundColor Yellow
-                $query = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID IN ('$resourceIDs') AND PackageID = '$TaskSequenceID'"
-                $allMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
-                    -ComputerName $script:sccmSiteServer `
-                    -Query $query `
-                    -ErrorAction SilentlyContinue
+            try {
+                Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
 
-                if ($allMessages) {
-                    Write-Host "[DEBUG] Found $($allMessages.Count) messages WITHOUT date filter" -ForegroundColor Yellow
+                $deploymentStatus = Get-CMDeploymentStatus -DeploymentId $deployment.AdvertisementID -ErrorAction SilentlyContinue
+
+                if ($deploymentStatus) {
+                    $statusDetails = $deploymentStatus | Get-CMDeploymentStatusDetails -ErrorAction SilentlyContinue
+
+                    if ($statusDetails) {
+                        # Filter by date if needed
+                        if ($DaysBack -gt 0) {
+                            $startDate = (Get-Date).AddDays(-$DaysBack)
+                            $statusDetails = $statusDetails | Where-Object {
+                                $_.'Execution Time' -and [datetime]$_.'Execution Time' -ge $startDate
+                            }
+                            Write-Host "[DEBUG] Date filter: Last $DaysBack days (since $($startDate.ToString('yyyy-MM-dd')))" -ForegroundColor Gray
+                        }
+
+                        $allStatusDetails += $statusDetails
+                        Write-Host "[DEBUG] Retrieved $(@($statusDetails).Count) status detail records" -ForegroundColor Gray
+                    }
                 }
-            }
 
-            if (-not $allMessages) {
-                return @{}
+                Set-Location $currentLocation
+            }
+            catch {
+                Write-Host "[ERROR] Failed to get status details for deployment $($deployment.AdvertisementID): $_" -ForegroundColor Red
+                Set-Location $currentLocation
             }
         }
 
-        Write-Host "[SUCCESS] Found $($allMessages.Count) total execution messages" -ForegroundColor Green
+        if (-not $allStatusDetails -or $allStatusDetails.Count -eq 0) {
+            Write-Host "[WARNING] No TS execution messages found for any deployments" -ForegroundColor Yellow
+            return @{}
+        }
 
-        # Group messages by ResourceID
-        $messagesByResource = $allMessages | Group-Object -Property ResourceID
-        Write-Host "[DEBUG] Messages grouped into $($messagesByResource.Count) resource(s)" -ForegroundColor Gray
+        Write-Host "[SUCCESS] Found $($allStatusDetails.Count) total execution detail records" -ForegroundColor Green
 
-        # Create hashtable: ResourceID -> Array of messages
+        # Group messages by DeviceName (which Get-CMDeploymentStatusDetails provides)
+        $messagesByDevice = $allStatusDetails | Group-Object -Property DeviceName
+        Write-Host "[DEBUG] Messages grouped into $($messagesByDevice.Count) device(s)" -ForegroundColor Gray
+
+        # Create hashtable: DeviceName -> Array of messages
+        # We'll key by DeviceName since that's what we have access to in the viewer
         $resultHash = @{}
-        foreach ($group in $messagesByResource) {
-            $resultHash[$group.Name] = $group.Group
+        foreach ($group in $messagesByDevice) {
+            if ($group.Name) {
+                $resultHash[$group.Name] = $group.Group
+            }
         }
 
         return $resultHash
@@ -329,6 +346,7 @@ function Get-AllTaskSequenceExecutionMessages {
     catch {
         Write-Host "[ERROR] Failed to collect TS execution messages: $_" -ForegroundColor Red
         Write-Host "[ERROR] Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
+        Set-Location $currentLocation -ErrorAction SilentlyContinue
         return @{}
     }
 }
@@ -358,31 +376,28 @@ function Save-TaskSequenceExecutionLog {
         $executionSteps = @()
 
         foreach ($msg in $Messages) {
-                # Get detailed status message if available
-                $statusMsgQuery = "SELECT * FROM SMS_StatusMessage WHERE RecordID = '$($msg.StatusMessageID)'"
-                $statusMsg = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
-                    -ComputerName $script:sccmSiteServer `
-                    -Query $statusMsgQuery `
-                    -ErrorAction SilentlyContinue
+                # Get-CMDeploymentStatusDetails returns properties with spaces in their names
+                # Access them using the property name syntax with spaces
 
-                # Format execution time
-                $executionTime = if ($msg.ExecutionTime) {
+                # Format execution time - Get-CMDeploymentStatusDetails returns it as 'Execution Time'
+                $executionTime = if ($msg.'Execution Time') {
                     try {
-                        [System.Management.ManagementDateTimeConverter]::ToDateTime($msg.ExecutionTime).ToString("yyyy-MM-dd HH:mm:ss")
+                        # It's already formatted as a datetime, just convert to string
+                        ([datetime]$msg.'Execution Time').ToString("yyyy-MM-dd HH:mm:ss")
                     }
-                    catch { $msg.ExecutionTime }
+                    catch { $msg.'Execution Time' }
                 } else { "" }
 
                 $executionSteps += [PSCustomObject]@{
                     ComputerName = $ComputerName
                     ExecutionTime = $executionTime
                     Step = if ($msg.Step) { $msg.Step } else { 0 }
-                    ActionName = if ($msg.ActionName) { $msg.ActionName } else { "" }
-                    GroupName = if ($msg.GroupName) { $msg.GroupName } else { "" }
-                    LastStatusMsgName = if ($msg.LastStatusMessageName) { $msg.LastStatusMessageName } else { "" }
-                    StatusMessageID = if ($statusMsg) { $statusMsg.MessageID } else { "" }
-                    ExitCode = if ($null -ne $msg.ExitCode) { $msg.ExitCode } else { "" }
-                    ActionOutput = if ($msg.ActionOutput) { $msg.ActionOutput } else { "" }  # Full output, no truncation
+                    ActionName = if ($msg.'Action Name') { $msg.'Action Name' } else { "" }
+                    GroupName = if ($msg.'Group Name') { $msg.'Group Name' } else { "" }
+                    LastStatusMsgName = if ($msg.'Last Message Name') { $msg.'Last Message Name' } else { "" }
+                    LastMessageID = if ($msg.'Last Message ID') { $msg.'Last Message ID' } else { "" }
+                    ExitCode = if ($null -ne $msg.'Exit Code') { $msg.'Exit Code' } else { "" }
+                    ActionOutput = if ($msg.'Action Output') { $msg.'Action Output' } else { "" }  # Full output, no truncation
                 }
             }
 
@@ -1048,7 +1063,8 @@ try {
     Write-Host "`nProcessing $($members.Count) collection members...`n" -ForegroundColor Cyan
 
     # Collect ALL TS execution messages for the collection at once (more efficient)
-    $allTSMessages = Get-AllTaskSequenceExecutionMessages -CollectionMembers $members -TaskSequenceID $taskSequenceID -DestinationDirectory $logsDirectory -DaysBack $tsStatusMessagesDaysBack
+    # Uses ConfigMgr cmdlets Get-CMDeploymentStatus and Get-CMDeploymentStatusDetails
+    $allTSMessages = Get-AllTaskSequenceExecutionMessages -CollectionMembers $members -TaskSequenceID $taskSequenceID -CollectionID $collectionID -DestinationDirectory $logsDirectory -DaysBack $tsStatusMessagesDaysBack
 
     # Process each member
     $deviceDataList = @()
@@ -1109,9 +1125,10 @@ try {
         }
 
         # Save TS status messages if available for this computer
+        # Note: Get-CMDeploymentStatusDetails returns data keyed by DeviceName, not ResourceID
         $tsMessagesDownloaded = $false
-        if ($allTSMessages.ContainsKey($resourceID)) {
-            $tsMessagesDownloaded = Save-TaskSequenceExecutionLog -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -Messages $allTSMessages[$resourceID] -DestinationDirectory $logsDirectory
+        if ($allTSMessages.ContainsKey($computerName)) {
+            $tsMessagesDownloaded = Save-TaskSequenceExecutionLog -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -Messages $allTSMessages[$computerName] -DestinationDirectory $logsDirectory
         }
         else {
             Write-Host "  No TS execution messages found for this computer" -ForegroundColor Gray
