@@ -31,6 +31,12 @@
             <HostnameVerificationTimeoutSeconds>3</HostnameVerificationTimeoutSeconds>
             <!-- Timeout for ping checks (in milliseconds) -->
             <PingTimeoutMs>1000</PingTimeoutMs>
+
+            <!-- Jumpbox for reaching VPN clients -->
+            <!-- Leave empty to connect directly to clients -->
+            <JumpboxServer>jumpbox.contoso.com</JumpboxServer>
+            <!-- If true, use jumpbox for all client connections; if false, connect directly -->
+            <UseJumpbox>true</UseJumpbox>
         </Monitoring>
 
         <!-- Web Server Settings (IIS handles the actual web server) -->
