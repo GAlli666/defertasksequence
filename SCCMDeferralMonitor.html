@@ -30,19 +30,29 @@
         .header {
             background: linear-gradient(135deg, #5DADE2 0%, #3498DB 100%);
             color: white;
-            padding: 30px;
-            text-align: center;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
         .header h1 {
-            font-size: 32px;
-            margin-bottom: 10px;
+            font-size: 20px;
+            margin: 0;
             font-weight: 600;
         }
 
-        .header p {
-            font-size: 14px;
-            opacity: 0.9;
+        .header-info {
+            text-align: right;
+            font-size: 13px;
+        }
+
+        .header-info div {
+            margin-bottom: 3px;
+        }
+
+        .header-info div:last-child {
+            margin-bottom: 0;
         }
 
         .metadata {
@@ -420,8 +430,11 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>SCCM Task Sequence Deferral Monitor</h1>
-            <p>Real-time monitoring of Task Sequence deferrals and deployment status</p>
+            <h1>SCCM TS Deferral Monitor</h1>
+            <div class="header-info">
+                <div><strong>Collection:</strong> <span id="headerCollectionName">Loading...</span></div>
+                <div><strong>Task Sequence:</strong> <span id="headerTSName">Loading...</span></div>
+            </div>
         </div>
 
         <div class="metadata" id="metadata">
@@ -576,6 +589,10 @@
                 document.getElementById('onlineDevices').textContent = metadata.OnlineDevices;
                 document.getElementById('offlineDevices').textContent = metadata.OfflineDevices;
                 document.getElementById('collectionID').textContent = metadata.CollectionID;
+
+                // Update header
+                document.getElementById('headerCollectionName').textContent = metadata.CollectionName || metadata.CollectionID;
+                document.getElementById('headerTSName').textContent = metadata.TaskSequenceName || metadata.TaskSequenceID;
 
                 document.getElementById('loadingMessage').style.display = 'none';
                 document.getElementById('dataTable').style.display = 'table';
