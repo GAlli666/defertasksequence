@@ -193,46 +193,40 @@ function Get-CollectionMembers {
 function Get-TaskSequenceDeploymentStatusFromSCCM {
     param(
         [string]$ResourceID,
-        [string]$TaskSequenceID
+        [string]$TaskSequenceID,
+        [string]$ComputerName
     )
 
     try {
         $currentLocation = Get-Location
         Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
 
-        # Query status messages for this computer and TS
-        $query = @"
-SELECT stat.RecordID, stat.MachineName, stat.MessageID, stat.Severity, stat.Time,
-       stat.MessageState, stat.TopLevelSiteCode
-FROM v_StatMsg stat
-WHERE stat.RecordID IN (
-    SELECT RecordID FROM v_TaskExecutionStatus
-    WHERE ResourceID = '$ResourceID'
-    AND PackageID = '$TaskSequenceID'
-)
-ORDER BY stat.Time DESC
-"@
+        # Use cmdlet to get deployment status for this specific TS and computer
+        $deployments = Get-CMDeployment -SoftwareName (Get-CMTaskSequence -TaskSequencePackageId $TaskSequenceID).Name -ErrorAction SilentlyContinue
 
-        $statusMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
-            -ComputerName $script:sccmSiteServer `
-            -Query $query `
-            -ErrorAction SilentlyContinue
+        if ($deployments) {
+            foreach ($deployment in $deployments) {
+                # Get deployment status for this specific computer
+                $status = Get-CMDeploymentStatus -DeploymentId $deployment.DeploymentID -ErrorAction SilentlyContinue |
+                    Where-Object { $_.DeviceName -eq $ComputerName }
 
-        Set-Location $currentLocation
+                if ($status) {
+                    Set-Location $currentLocation
 
-        if ($statusMessages -and $statusMessages.Count -gt 0) {
-            # Get most recent message
-            $latestMessage = $statusMessages[0]
-
-            # Determine status based on message
-            switch ($latestMessage.MessageState) {
-                1 { return "Success" }
-                2 { return "In Progress" }
-                3 { return "Failed" }
-                default { return "Unknown" }
+                    # Map status to our values
+                    switch ($status.StatusType) {
+                        1 { return "Success" }
+                        2 { return "In Progress" }
+                        3 { return "Requirements Not Met" }
+                        4 { return "Unknown" }
+                        5 { return "Failed" }
+                        default { return "Unknown" }
+                    }
+                }
             }
         }
 
+        Set-Location $currentLocation
         return "Not Started"
     }
     catch {
@@ -248,6 +242,7 @@ function Get-AndSaveTaskSequenceStatusMessages {
     <#
     .SYNOPSIS
         Downloads ALL TS execution status from SCCM for a computer and saves to file
+        Uses simple WQL queries (no JOINs) to get execution history
     #>
     param(
         [string]$ComputerName,
@@ -259,43 +254,50 @@ function Get-AndSaveTaskSequenceStatusMessages {
     try {
         Write-Host "  Downloading TS execution status from SCCM..." -ForegroundColor Cyan
 
-        # Query TS execution status for this resource and TS package
-        $query = @"
-SELECT tes.ExecutionTime, tes.Step, tes.ActionName, tes.GroupName,
-       tes.LastStatusMsgName, tes.ExitCode, tes.ActionOutput
-FROM vSMS_TaskSequenceExecutionStatus tes
-INNER JOIN v_TaskSequencePackage tsp ON tes.PackageID = tsp.PackageID
-WHERE tes.ResourceID = '$ResourceID'
-  AND tes.PackageID = '$TaskSequenceID'
-ORDER BY tes.ExecutionTime DESC
-"@
+        # Simple WQL query - no INNER JOIN (not supported in WQL)
+        # Query the execution status view directly
+        $query = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID = '$ResourceID' AND PackageID = '$TaskSequenceID'"
 
         $messages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
             -ComputerName $script:sccmSiteServer `
             -Query $query `
-            -ErrorAction Stop
+            -ErrorAction SilentlyContinue
 
         if ($messages -and $messages.Count -gt 0) {
             # Convert to structured format
             $messageList = @()
 
             foreach ($msg in $messages) {
+                # Get detailed status message
+                $statusMsgQuery = "SELECT * FROM SMS_StatusMessage WHERE RecordID = '$($msg.StatusMessageID)'"
+                $statusMsg = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+                    -ComputerName $script:sccmSiteServer `
+                    -Query $statusMsgQuery `
+                    -ErrorAction SilentlyContinue
+
                 $messageList += [PSCustomObject]@{
-                    ExecutionTime = if ($msg.ExecutionTime) { [System.Management.ManagementDateTimeConverter]::ToDateTime($msg.ExecutionTime) } else { $null }
+                    ExecutionTime = if ($msg.ExecutionTime) {
+                        try { [System.Management.ManagementDateTimeConverter]::ToDateTime($msg.ExecutionTime) }
+                        catch { $msg.ExecutionTime }
+                    } else { $null }
                     Step = $msg.Step
                     ActionName = $msg.ActionName
-                    GroupName = $msg.GroupName
-                    StatusMessage = $msg.LastStatusMsgName
+                    GroupName = if ($msg.GroupName) { $msg.GroupName } else { "" }
+                    StatusMessage = if ($statusMsg) { $statusMsg.MessageID } else { "" }
                     ExitCode = $msg.ExitCode
-                    ActionOutput = $msg.ActionOutput
+                    LastStatusMessageName = $msg.LastStatusMessageName
+                    ActionOutput = if ($msg.ActionOutput) { $msg.ActionOutput.SubString(0, [Math]::Min(500, $msg.ActionOutput.Length)) } else { "" }
                 }
             }
+
+            # Sort by execution time descending
+            $messageList = $messageList | Sort-Object ExecutionTime -Descending
 
             # Save to JSON file
             $destFile = Join-Path $DestinationDirectory "$ComputerName`_TSStatusMessages.json"
             $messageList | ConvertTo-Json -Depth 5 | Out-File -FilePath $destFile -Encoding utf8 -Force
 
-            Write-Host "  Saved $($messages.Count) TS execution steps to file" -ForegroundColor Green
+            Write-Host "  Saved $($messageList.Count) TS execution steps to file" -ForegroundColor Green
             return $true
         }
         else {
@@ -773,8 +775,8 @@ try {
         $isWindows11 = ($osVersion -eq "Windows 11")
         Write-Host "  OS: $osVersion" -ForegroundColor Gray
 
-        # Get TS status from SCCM status messages
-        $tsStatus = Get-TaskSequenceDeploymentStatusFromSCCM -ResourceID $resourceID -TaskSequenceID $taskSequenceID
+        # Get TS status from SCCM deployment status
+        $tsStatus = Get-TaskSequenceDeploymentStatusFromSCCM -ResourceID $resourceID -TaskSequenceID $taskSequenceID -ComputerName $computerName
 
         # Apply Windows 11 override
         if ($win11Override -and $isWindows11 -and $tsStatus -ne "Success") {
