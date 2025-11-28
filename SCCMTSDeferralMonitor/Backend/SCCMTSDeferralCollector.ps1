@@ -306,11 +306,11 @@ function Get-AllTaskSequenceDataFromSCCM {
                     $statusDetails = $deploymentStatus | Get-CMDeploymentStatusDetails -ErrorAction SilentlyContinue
 
                     if ($statusDetails) {
-                        # Filter by date if needed
+                        # Filter by date if needed - use SummarizationTime property
                         if ($DaysBack -gt 0) {
                             $startDate = (Get-Date).AddDays(-$DaysBack)
                             $statusDetails = $statusDetails | Where-Object {
-                                $_.'Execution Time' -and [datetime]$_.'Execution Time' -ge $startDate
+                                $_.SummarizationTime -and [datetime]$_.SummarizationTime -ge $startDate
                             }
                             Write-Host "[DEBUG] Date filter: Last $DaysBack days (since $($startDate.ToString('yyyy-MM-dd')))" -ForegroundColor Gray
                         }
@@ -353,24 +353,23 @@ function Get-AllTaskSequenceDataFromSCCM {
         $resultHash = @{}
         foreach ($group in $messagesByDevice) {
             if ($group.Name) {
-                # Get the most recent status for this device
-                $latestRecord = $group.Group | Sort-Object 'Execution Time' -Descending | Select-Object -First 1
+                # Get the most recent status for this device - use SummarizationTime property
+                $latestRecord = $group.Group | Sort-Object SummarizationTime -Descending | Select-Object -First 1
 
-                # Determine status from the latest record
+                # Determine status from StatusDescription
                 $tsStatus = "Unknown"
-                if ($latestRecord.'Deployment Status') {
-                    $tsStatus = $latestRecord.'Deployment Status'
-                }
-                elseif ($latestRecord.'Last Message Name') {
-                    # Map message name to status
-                    switch -Wildcard ($latestRecord.'Last Message Name') {
+                if ($latestRecord.StatusDescription) {
+                    # Map status description to our status values
+                    switch -Wildcard ($latestRecord.StatusDescription) {
                         "*Success*" { $tsStatus = "Success" }
                         "*Complete*" { $tsStatus = "Success" }
+                        "*finished successfully*" { $tsStatus = "Success" }
                         "*Running*" { $tsStatus = "In Progress" }
                         "*Progress*" { $tsStatus = "In Progress" }
+                        "*reboot*" { $tsStatus = "In Progress" }
                         "*Failed*" { $tsStatus = "Failed" }
                         "*Error*" { $tsStatus = "Failed" }
-                        default { $tsStatus = $latestRecord.'Last Message Name' }
+                        default { $tsStatus = "In Progress" }
                     }
                 }
 
