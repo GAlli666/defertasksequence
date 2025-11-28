@@ -252,11 +252,12 @@ WHERE adv.ResourceID = '$ResourceID' AND adv.AdvertisementID LIKE '%$TaskSequenc
     }
 }
 
-function Get-AllTaskSequenceExecutionMessages {
+function Get-AllTaskSequenceDataFromSCCM {
     <#
     .SYNOPSIS
-        Downloads ALL TS execution messages for the entire collection at once using ConfigMgr cmdlets
-        Uses Get-CMDeploymentStatusDetails to retrieve detailed execution information
+        Downloads ALL TS data (execution messages AND status) for entire collection at once using ConfigMgr cmdlets
+        Uses Get-CMDeploymentStatusDetails to retrieve everything in one go
+        Returns hashtable with both Messages and Status for each device
     #>
     param(
         [array]$CollectionMembers,
@@ -267,9 +268,9 @@ function Get-AllTaskSequenceExecutionMessages {
     )
 
     try {
-        Write-Host "`nCollecting TS execution messages for entire collection..." -ForegroundColor Cyan
+        Write-Host "`nCollecting ALL TS data for entire collection using ConfigMgr cmdlets..." -ForegroundColor Cyan
 
-        # Get all deployments for this task sequence
+        # Get all deployments for this task sequence using ConfigMgr cmdlet
         $currentLocation = Get-Location
         Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
 
@@ -282,20 +283,22 @@ function Get-AllTaskSequenceExecutionMessages {
             return @{}
         }
 
-        Write-Host "[DEBUG] Found $(@($deployments).Count) deployment(s) for this TS" -ForegroundColor Gray
+        Write-Host "[SUCCESS] Found $(@($deployments).Count) deployment(s) for this TS" -ForegroundColor Green
 
-        # Collect all status details from all deployments
+        # Collect all status details from all deployments using ConfigMgr cmdlets
         $allStatusDetails = @()
 
         foreach ($deployment in $deployments) {
-            Write-Host "[DEBUG] Getting status details for deployment: $($deployment.AdvertisementID)" -ForegroundColor Gray
+            Write-Host "[DEBUG] Processing deployment: $($deployment.AdvertisementID)" -ForegroundColor Gray
 
             try {
                 Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
 
+                # Use ConfigMgr cmdlet to get deployment status
                 $deploymentStatus = Get-CMDeploymentStatus -DeploymentId $deployment.AdvertisementID -ErrorAction SilentlyContinue
 
                 if ($deploymentStatus) {
+                    # Use ConfigMgr cmdlet to get detailed status (this has EVERYTHING)
                     $statusDetails = $deploymentStatus | Get-CMDeploymentStatusDetails -ErrorAction SilentlyContinue
 
                     if ($statusDetails) {
@@ -322,29 +325,53 @@ function Get-AllTaskSequenceExecutionMessages {
         }
 
         if (-not $allStatusDetails -or $allStatusDetails.Count -eq 0) {
-            Write-Host "[WARNING] No TS execution messages found for any deployments" -ForegroundColor Yellow
+            Write-Host "[WARNING] No TS data found for any deployments" -ForegroundColor Yellow
             return @{}
         }
 
-        Write-Host "[SUCCESS] Found $($allStatusDetails.Count) total execution detail records" -ForegroundColor Green
+        Write-Host "[SUCCESS] Found $($allStatusDetails.Count) total status detail records" -ForegroundColor Green
 
-        # Group messages by DeviceName (which Get-CMDeploymentStatusDetails provides)
+        # Group by DeviceName and extract BOTH messages AND status
         $messagesByDevice = $allStatusDetails | Group-Object -Property DeviceName
-        Write-Host "[DEBUG] Messages grouped into $($messagesByDevice.Count) device(s)" -ForegroundColor Gray
+        Write-Host "[DEBUG] Data grouped into $($messagesByDevice.Count) device(s)" -ForegroundColor Gray
 
-        # Create hashtable: DeviceName -> Array of messages
-        # We'll key by DeviceName since that's what we have access to in the viewer
+        # Create hashtable: DeviceName -> { Messages: [...], Status: "..." }
         $resultHash = @{}
         foreach ($group in $messagesByDevice) {
             if ($group.Name) {
-                $resultHash[$group.Name] = $group.Group
+                # Get the most recent status for this device
+                $latestRecord = $group.Group | Sort-Object 'Execution Time' -Descending | Select-Object -First 1
+
+                # Determine status from the latest record
+                $tsStatus = "Unknown"
+                if ($latestRecord.'Deployment Status') {
+                    $tsStatus = $latestRecord.'Deployment Status'
+                }
+                elseif ($latestRecord.'Last Message Name') {
+                    # Map message name to status
+                    switch -Wildcard ($latestRecord.'Last Message Name') {
+                        "*Success*" { $tsStatus = "Success" }
+                        "*Complete*" { $tsStatus = "Success" }
+                        "*Running*" { $tsStatus = "In Progress" }
+                        "*Progress*" { $tsStatus = "In Progress" }
+                        "*Failed*" { $tsStatus = "Failed" }
+                        "*Error*" { $tsStatus = "Failed" }
+                        default { $tsStatus = $latestRecord.'Last Message Name' }
+                    }
+                }
+
+                $resultHash[$group.Name] = @{
+                    Messages = $group.Group
+                    Status = $tsStatus
+                }
             }
         }
 
+        Write-Host "[SUCCESS] Processed $($resultHash.Count) devices with TS data" -ForegroundColor Green
         return $resultHash
     }
     catch {
-        Write-Host "[ERROR] Failed to collect TS execution messages: $_" -ForegroundColor Red
+        Write-Host "[ERROR] Failed to collect TS data: $_" -ForegroundColor Red
         Write-Host "[ERROR] Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
         Set-Location $currentLocation -ErrorAction SilentlyContinue
         return @{}
@@ -1062,9 +1089,12 @@ try {
 
     Write-Host "`nProcessing $($members.Count) collection members...`n" -ForegroundColor Cyan
 
-    # Collect ALL TS execution messages for the collection at once (more efficient)
-    # Uses ConfigMgr cmdlets Get-CMDeploymentStatus and Get-CMDeploymentStatusDetails
-    $allTSMessages = Get-AllTaskSequenceExecutionMessages -CollectionMembers $members -TaskSequenceID $taskSequenceID -CollectionID $collectionID -DestinationDirectory $logsDirectory -DaysBack $tsStatusMessagesDaysBack
+    # Collect ALL TS data (messages AND status) for the collection at once - NO PER-DEVICE QUERIES!
+    # Uses ONLY ConfigMgr cmdlets: Get-CMTaskSequenceDeployment, Get-CMDeploymentStatus, Get-CMDeploymentStatusDetails
+    Write-Host "`n============================================" -ForegroundColor Cyan
+    Write-Host "COLLECTION-WIDE DATA PULL (ConfigMgr Cmdlets Only)" -ForegroundColor Cyan
+    Write-Host "============================================" -ForegroundColor Cyan
+    $allTSData = Get-AllTaskSequenceDataFromSCCM -CollectionMembers $members -TaskSequenceID $taskSequenceID -CollectionID $collectionID -DestinationDirectory $logsDirectory -DaysBack $tsStatusMessagesDaysBack
 
     # Process each member
     $deviceDataList = @()
@@ -1112,26 +1142,34 @@ try {
         $isWindows11 = $osInfo.IsWindows11
         Write-Host "  OS: $($osInfo.OSName) (Build: $($osInfo.BuildNumber))" -ForegroundColor Gray
 
-        # Get TS status from SCCM deployment status
-        $tsStatus = Get-TaskSequenceDeploymentStatusFromSCCM -ResourceID $resourceID -TaskSequenceID $taskSequenceID -ComputerName $computerName
-
-        # Apply Windows 11 override
-        if ($win11Override -and $isWindows11 -and $tsStatus -ne "Success") {
-            Write-Host "  TS Status: $tsStatus -> Success (Win11 Override)" -ForegroundColor Green
-            $tsStatus = "Success"
-        }
-        else {
-            Write-Host "  TS Status: $tsStatus" -ForegroundColor Gray
-        }
-
-        # Save TS status messages if available for this computer
-        # Note: Get-CMDeploymentStatusDetails returns data keyed by DeviceName, not ResourceID
+        # Get TS status from the collection-wide data we already pulled - NO MORE WMI QUERIES!
+        $tsStatus = "Unknown"
         $tsMessagesDownloaded = $false
-        if ($allTSMessages.ContainsKey($computerName)) {
-            $tsMessagesDownloaded = Save-TaskSequenceExecutionLog -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -Messages $allTSMessages[$computerName] -DestinationDirectory $logsDirectory
+
+        if ($allTSData.ContainsKey($computerName)) {
+            # Extract status from the collection-wide pull
+            $tsStatus = $allTSData[$computerName].Status
+            Write-Host "  TS Status: $tsStatus (from collection-wide data)" -ForegroundColor Gray
+
+            # Apply Windows 11 override
+            if ($win11Override -and $isWindows11 -and $tsStatus -ne "Success") {
+                Write-Host "  TS Status: $tsStatus -> Success (Win11 Override)" -ForegroundColor Green
+                $tsStatus = "Success"
+            }
+
+            # Save TS execution messages from the collection-wide data
+            if ($allTSData[$computerName].Messages) {
+                $tsMessagesDownloaded = Save-TaskSequenceExecutionLog -ComputerName $computerName -ResourceID $resourceID -TaskSequenceID $taskSequenceID -Messages $allTSData[$computerName].Messages -DestinationDirectory $logsDirectory
+            }
         }
         else {
-            Write-Host "  No TS execution messages found for this computer" -ForegroundColor Gray
+            Write-Host "  No TS data found in collection-wide pull" -ForegroundColor Gray
+
+            # Apply Windows 11 override even if no data
+            if ($win11Override -and $isWindows11) {
+                Write-Host "  TS Status: Unknown -> Success (Win11 Override)" -ForegroundColor Green
+                $tsStatus = "Success"
+            }
         }
 
         # Get deferral log data
