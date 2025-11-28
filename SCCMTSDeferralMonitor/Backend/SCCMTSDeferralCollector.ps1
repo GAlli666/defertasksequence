@@ -582,39 +582,89 @@ function Get-DeviceOSInfo {
 
         if ($system) {
             $build = $system.Build01
-            $caption = $system.Caption0
             $version = $system.Version0
 
-            # Determine OS name from build number
+            # Determine OS name ONLY from build number (SCCM Caption0 is unreliable)
             $osName = "Unknown"
             $isWindows11 = $false
+            $buildNumber = ""
 
-            if ($build) {
-                # Parse build number (format: 10.0.xxxxx)
-                if ($build -match '10\.0\.(\d+)') {
-                    $buildNumber = [int]$matches[1]
+            if ($build -and $build -match '10\.0\.(\d+)') {
+                $buildNumber = $matches[1]
+                $buildNum = [int]$buildNumber
 
-                    # Windows 11 builds: 22000 and above
-                    if ($buildNumber -ge 22000) {
-                        $osName = "Windows 11"
-                        $isWindows11 = $true
+                # Determine OS from build number only
+                if ($buildNum -ge 22000) {
+                    # Windows 11 version mapping
+                    if ($buildNum -ge 26100) {
+                        $osName = "Windows 11 24H2"
                     }
-                    # Windows 10 builds
-                    elseif ($buildNumber -ge 10240) {
-                        $osName = "Windows 10"
+                    elseif ($buildNum -ge 22631) {
+                        $osName = "Windows 11 23H2"
+                    }
+                    elseif ($buildNum -ge 22621) {
+                        $osName = "Windows 11 22H2"
+                    }
+                    elseif ($buildNum -ge 22000) {
+                        $osName = "Windows 11 21H2"
+                    }
+                    $isWindows11 = $true
+                }
+                elseif ($buildNum -ge 10240) {
+                    # Windows 10 version mapping
+                    if ($buildNum -ge 19045) {
+                        $osName = "Windows 10 22H2"
+                    }
+                    elseif ($buildNum -ge 19044) {
+                        $osName = "Windows 10 21H2"
+                    }
+                    elseif ($buildNum -ge 19043) {
+                        $osName = "Windows 10 21H1"
+                    }
+                    elseif ($buildNum -ge 19042) {
+                        $osName = "Windows 10 20H2"
+                    }
+                    elseif ($buildNum -ge 19041) {
+                        $osName = "Windows 10 2004"
+                    }
+                    elseif ($buildNum -ge 18363) {
+                        $osName = "Windows 10 1909"
+                    }
+                    elseif ($buildNum -ge 18362) {
+                        $osName = "Windows 10 1903"
+                    }
+                    elseif ($buildNum -ge 17763) {
+                        $osName = "Windows 10 1809"
+                    }
+                    elseif ($buildNum -ge 17134) {
+                        $osName = "Windows 10 1803"
+                    }
+                    elseif ($buildNum -ge 16299) {
+                        $osName = "Windows 10 1709"
+                    }
+                    elseif ($buildNum -ge 15063) {
+                        $osName = "Windows 10 1703"
+                    }
+                    elseif ($buildNum -ge 14393) {
+                        $osName = "Windows 10 1607"
+                    }
+                    elseif ($buildNum -ge 10586) {
+                        $osName = "Windows 10 1511"
+                    }
+                    else {
+                        $osName = "Windows 10 1507"
                     }
                 }
-            }
-
-            # Fall back to caption if available
-            if ($osName -eq "Unknown" -and $caption) {
-                $osName = $caption
+                else {
+                    # Older Windows versions
+                    $osName = "Windows (Build $buildNumber)"
+                }
             }
 
             return @{
                 OSName = $osName
                 Build = $build
-                BuildNumber = if ($build -match '10\.0\.(\d+)') { $matches[1] } else { "" }
+                BuildNumber = $buildNumber
                 Version = $version
                 IsWindows11 = $isWindows11
             }
