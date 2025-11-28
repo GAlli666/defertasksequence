@@ -457,7 +457,9 @@ function Get-TSLogsFromMachine {
     param(
         [string]$ComputerName,
         [string]$DestinationDirectory,
-        [int]$DaysToKeep = 7
+        [string]$DateMode = "DaysBack",
+        [int]$LookbackDays = 7,
+        [string]$StartDate = ""
     )
 
     try {
@@ -468,25 +470,64 @@ function Get-TSLogsFromMachine {
             return $false
         }
 
-        $cutoffDate = (Get-Date).AddDays(-$DaysToKeep)
+        # Determine cutoff date based on mode
+        $cutoffDate = $null
+        if ($DateMode -eq "FromDate" -and -not [string]::IsNullOrEmpty($StartDate)) {
+            try {
+                $cutoffDate = [datetime]::ParseExact($StartDate, "yyyy-MM-dd", $null)
+                Write-Host "  Using start date: $($cutoffDate.ToString('yyyy-MM-dd'))" -ForegroundColor Gray
+            }
+            catch {
+                Write-Host "  Invalid start date format, using DaysBack mode instead" -ForegroundColor Yellow
+                $cutoffDate = (Get-Date).AddDays(-$LookbackDays)
+            }
+        }
+        else {
+            # DaysBack mode (default)
+            $cutoffDate = (Get-Date).AddDays(-$LookbackDays)
+            Write-Host "  Looking back $LookbackDays days from today" -ForegroundColor Gray
+        }
+
+        # Get log files newer than cutoff date
         $logFiles = Get-ChildItem -Path $tsLogPath -Filter "*.log" -ErrorAction Stop | Where-Object { $_.LastWriteTime -gt $cutoffDate }
 
         if ($logFiles.Count -eq 0) {
-            Write-Host "No recent TS logs found on $ComputerName" -ForegroundColor Yellow
+            Write-Host "No TS logs found on $ComputerName since $($cutoffDate.ToString('yyyy-MM-dd'))" -ForegroundColor Yellow
             return $false
         }
 
+        # Create destination directory for this machine's TS logs
         $destDir = Join-Path $DestinationDirectory "$ComputerName`_TSLogs"
         if (-not (Test-Path $destDir)) {
             New-Item -Path $destDir -ItemType Directory -Force | Out-Null
         }
 
+        # Copy log files (overwrite if newer, keeps old files forever)
+        $copiedCount = 0
         foreach ($logFile in $logFiles) {
             $destFile = Join-Path $destDir $logFile.Name
-            Copy-Item $logFile.FullName $destFile -Force -ErrorAction SilentlyContinue
+
+            # Only copy if destination doesn't exist or source is newer
+            if (-not (Test-Path $destFile)) {
+                Copy-Item $logFile.FullName $destFile -Force -ErrorAction SilentlyContinue
+                $copiedCount++
+            }
+            else {
+                $destFileInfo = Get-Item $destFile
+                if ($logFile.LastWriteTime -gt $destFileInfo.LastWriteTime) {
+                    Copy-Item $logFile.FullName $destFile -Force -ErrorAction SilentlyContinue
+                    $copiedCount++
+                }
+            }
         }
 
-        Write-Host "Copied $($logFiles.Count) TS log files from $ComputerName" -ForegroundColor Green
+        if ($copiedCount -gt 0) {
+            Write-Host "Copied/updated $copiedCount TS log files from $ComputerName" -ForegroundColor Green
+        }
+        else {
+            Write-Host "All TS logs already up to date for $ComputerName" -ForegroundColor Gray
+        }
+
         return $true
     }
     catch {
@@ -587,8 +628,9 @@ try {
     $collectionID = $config.Configuration.Settings.SCCM.CollectionID
     $taskSequenceID = $config.Configuration.Settings.SCCM.TaskSequenceID
     $deferralLogPath = $config.Configuration.Settings.Logs.DeferralLogPath
-    $localLogStorage = $config.Configuration.Settings.Logs.LocalLogStoragePath
-    $tsLogRetentionDays = [int]$config.Configuration.Settings.Logs.TSLogRetentionDays
+    $tsLogDateMode = $config.Configuration.Settings.Logs.TSLogDateMode
+    $tsLogLookbackDays = [int]$config.Configuration.Settings.Logs.TSLogLookbackDays
+    $tsLogStartDate = $config.Configuration.Settings.Logs.TSLogStartDate
     $webRootPath = $config.Configuration.Settings.WebServer.WebRootPath
     $dataDirectoryConfig = $config.Configuration.Settings.WebServer.DataDirectory
     $logsDirectoryConfig = $config.Configuration.Settings.WebServer.LogsDirectory
@@ -620,11 +662,6 @@ try {
     }
 
     # Ensure directories exist
-    if (-not (Test-Path $localLogStorage)) {
-        New-Item -Path $localLogStorage -ItemType Directory -Force | Out-Null
-        Write-Host "Created local log storage directory: $localLogStorage" -ForegroundColor Green
-    }
-
     if (-not (Test-Path $dataDirectory)) {
         New-Item -Path $dataDirectory -ItemType Directory -Force | Out-Null
         Write-Host "Created data directory: $dataDirectory" -ForegroundColor Green
@@ -763,7 +800,7 @@ try {
                 Copy-DeferralLog -ComputerName $computerName -SourcePath $deferralLogPath -DestinationDirectory $logsDirectory
 
                 # Copy TS logs
-                Get-TSLogsFromMachine -ComputerName $computerName -DestinationDirectory $logsDirectory -DaysToKeep $tsLogRetentionDays
+                Get-TSLogsFromMachine -ComputerName $computerName -DestinationDirectory $logsDirectory -DateMode $tsLogDateMode -LookbackDays $tsLogLookbackDays -StartDate $tsLogStartDate
             }
             else {
                 Write-Host "  Deferral log not available: $($deferralData.ErrorMessage)" -ForegroundColor Yellow
