@@ -268,22 +268,26 @@ function Get-AllTaskSequenceDataFromSCCM {
     )
 
     try {
-        Write-Host "`nCollecting ALL TS data for entire collection using ConfigMgr cmdlets..." -ForegroundColor Cyan
+        Write-Host "`nCollecting ALL TS data using ConfigMgr cmdlets..." -ForegroundColor Cyan
+        Write-Host "[INFO] Collection $CollectionID is ONLY for getting list of machines to monitor" -ForegroundColor Cyan
+        Write-Host "[INFO] Getting ALL deployments for TS $TaskSequenceID (from ANY collection)" -ForegroundColor Cyan
 
-        # Get all deployments for this task sequence using ConfigMgr cmdlet
+        # Get ALL deployments for this task sequence (NOT filtered by collection!)
+        # The CollectionID parameter is ONLY used to get the list of machines to monitor
+        # The TS could be deployed to ANY collection(s), not necessarily the monitoring collection
         $currentLocation = Get-Location
         Set-Location "$($script:sccmSiteCode):" -ErrorAction Stop
 
-        $deployments = Get-CMTaskSequenceDeployment -TaskSequenceId $TaskSequenceID -CollectionId $CollectionID -ErrorAction SilentlyContinue
+        $deployments = Get-CMTaskSequenceDeployment -TaskSequenceId $TaskSequenceID -ErrorAction SilentlyContinue
 
         Set-Location $currentLocation
 
         if (-not $deployments) {
-            Write-Host "[WARNING] No deployments found for TaskSequence $TaskSequenceID to Collection $CollectionID" -ForegroundColor Yellow
+            Write-Host "[WARNING] No deployments found for TaskSequence $TaskSequenceID" -ForegroundColor Yellow
             return @{}
         }
 
-        Write-Host "[SUCCESS] Found $(@($deployments).Count) deployment(s) for this TS" -ForegroundColor Green
+        Write-Host "[SUCCESS] Found $(@($deployments).Count) deployment(s) for this TS across ALL collections" -ForegroundColor Green
 
         # Collect all status details from all deployments using ConfigMgr cmdlets
         $allStatusDetails = @()
@@ -329,10 +333,20 @@ function Get-AllTaskSequenceDataFromSCCM {
             return @{}
         }
 
-        Write-Host "[SUCCESS] Found $($allStatusDetails.Count) total status detail records" -ForegroundColor Green
+        Write-Host "[SUCCESS] Found $($allStatusDetails.Count) total status detail records across ALL deployments" -ForegroundColor Green
 
-        # Group by DeviceName and extract BOTH messages AND status
-        $messagesByDevice = $allStatusDetails | Group-Object -Property DeviceName
+        # Create a set of machine names from our monitoring collection for filtering
+        $monitoringMachines = @{}
+        foreach ($member in $CollectionMembers) {
+            $monitoringMachines[$member.Name] = $true
+        }
+        Write-Host "[DEBUG] Monitoring collection has $($monitoringMachines.Count) machines" -ForegroundColor Gray
+
+        # Filter to only devices in our monitoring collection, then group by DeviceName
+        $filteredDetails = $allStatusDetails | Where-Object { $monitoringMachines.ContainsKey($_.DeviceName) }
+        Write-Host "[DEBUG] Filtered to $($filteredDetails.Count) records for machines in monitoring collection" -ForegroundColor Green
+
+        $messagesByDevice = $filteredDetails | Group-Object -Property DeviceName
         Write-Host "[DEBUG] Data grouped into $($messagesByDevice.Count) device(s)" -ForegroundColor Gray
 
         # Create hashtable: DeviceName -> { Messages: [...], Status: "..." }
