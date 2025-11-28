@@ -235,6 +235,10 @@ function Get-TaskSequenceDeploymentStatusFromSCCM {
             if ($statuses) {
                 Write-Host "  [DEBUG] Found $(@($statuses).Count) status record(s) for deployment" -ForegroundColor Gray
 
+                # Show what device names are in the records
+                $deviceNames = ($statuses | Select-Object -ExpandProperty DeviceName -Unique) -join ', '
+                Write-Host "  [DEBUG] Device names in status records: $deviceNames" -ForegroundColor Gray
+
                 # Try to find status for this computer
                 $status = $statuses | Where-Object { $_.DeviceName -eq $ComputerName }
 
@@ -257,6 +261,7 @@ function Get-TaskSequenceDeploymentStatusFromSCCM {
                 }
                 else {
                     Write-Host "  [DEBUG] No status found for computer: $ComputerName in deployment $($deployment.DeploymentID)" -ForegroundColor Yellow
+                    Write-Host "  [DEBUG] Expected: '$ComputerName' | Available: $deviceNames" -ForegroundColor Yellow
                 }
             }
             else {
@@ -321,6 +326,42 @@ function Get-AndSaveTaskSequenceStatusMessages {
 
         if ($messages -and $messages.Count -gt 0) {
             Write-Host "  [DEBUG] Found $($messages.Count) execution status message(s)" -ForegroundColor Green
+        }
+        else {
+            # Try broader query without date filter to see if ANY records exist
+            Write-Host "  [DEBUG] No messages with current query. Trying without date filter..." -ForegroundColor Yellow
+            $testQuery = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID = '$ResourceID' AND PackageID = '$TaskSequenceID'"
+            $testMessages = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+                -ComputerName $script:sccmSiteServer `
+                -Query $testQuery `
+                -ErrorAction SilentlyContinue
+
+            if ($testMessages) {
+                Write-Host "  [DEBUG] Found $($testMessages.Count) record(s) WITHOUT date filter - date filter may be too restrictive" -ForegroundColor Yellow
+                $messages = $testMessages
+            }
+            else {
+                # Try even broader - just ResourceID
+                Write-Host "  [DEBUG] No records found. Trying with just ResourceID..." -ForegroundColor Yellow
+                $testQuery2 = "SELECT * FROM SMS_TaskExecutionStatus WHERE ResourceID = '$ResourceID'"
+                $testMessages2 = Get-WmiObject -Namespace "ROOT\SMS\site_$($script:sccmSiteCode)" `
+                    -ComputerName $script:sccmSiteServer `
+                    -Query $testQuery2 `
+                    -ErrorAction SilentlyContinue
+
+                if ($testMessages2) {
+                    Write-Host "  [DEBUG] Found $($testMessages2.Count) record(s) for ResourceID across all packages" -ForegroundColor Yellow
+                    $packageIDs = ($testMessages2 | Select-Object -ExpandProperty PackageID -Unique) -join ', '
+                    Write-Host "  [DEBUG] PackageIDs found: $packageIDs" -ForegroundColor Yellow
+                    Write-Host "  [DEBUG] Expected PackageID: $TaskSequenceID" -ForegroundColor Yellow
+                }
+                else {
+                    Write-Host "  [DEBUG] No SMS_TaskExecutionStatus records exist for ResourceID $ResourceID at all" -ForegroundColor Red
+                }
+            }
+        }
+
+        if ($messages -and $messages.Count -gt 0) {
             # Convert to structured format with full details
             $executionSteps = @()
 
@@ -493,8 +534,7 @@ function Get-AndSaveTaskSequenceStatusMessages {
             return $true
         }
         else {
-            Write-Host "  [DEBUG] No TS execution data found in SCCM for query" -ForegroundColor Yellow
-            Write-Host "  [DEBUG] Messages variable state - IsNull: $($null -eq $messages), Count: $($messages.Count)" -ForegroundColor Yellow
+            Write-Host "  No TS execution data could be retrieved" -ForegroundColor Yellow
             return $false
         }
     }
